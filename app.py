@@ -26,7 +26,7 @@ except Exception:
 DEFAULT_CLIENT_ID = "K662D1WXrt"
 TZ = "Europe/Amsterdam"
 DAYS_AHEAD = 60
-BAR_CODES = ["445","701"]
+BAR_CODES = ["445","701","741"]
 CK_CODES  = ["442"]
 WEEK_LABEL = "short"       # of "iso"
 SAT_ONLY_CK = True         # CommissieKamer alleen zaterdag
