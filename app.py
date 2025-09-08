@@ -9,9 +9,10 @@ import pandas as pd
 import requests
 import streamlit as st
 from datetime import datetime
+from urllib.parse import quote
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
-# macOS LibreSSL warning onderdrukken (in Cloud zie je deze normaliter niet)
+# Onderdruk macOS LibreSSL waarschuwing
 warnings.filterwarnings("ignore", message=r"urllib3 v2 only supports OpenSSL.*", category=Warning, module=r"urllib3\.__init__")
 
 # Rich text detectie (voor rode annotaties bovenaan)
@@ -22,11 +23,14 @@ try:
 except Exception:
     _HAS_RICHTEXT = False
 
-# === VASTE INSTELLINGEN (geen UI) ===
+# === VASTE INSTELLINGEN ===
 DEFAULT_CLIENT_ID = "K662D1WXrt"
 TZ = "Europe/Amsterdam"
 DAYS_AHEAD = 60
-BAR_CODES = ["445","701","741"]
+WEEK_OFFSET = -1  # ophaal: vorige week + 60 dagen
+FIELDS = "naam,datumvanaf,datumtot,tijdvanaf,tijdtot,lokatie,heledag"
+
+BAR_CODES = ["445", "701", "741"]
 CK_CODES  = ["442"]
 WEEK_LABEL = "short"       # of "iso"
 SAT_ONLY_CK = True         # CommissieKamer alleen zaterdag
@@ -53,14 +57,27 @@ DEFAULT_SLOTS: Dict[str, List[Tuple[str, str]]] = {
 def month_short_nl(m:int) -> str:
     return ["jan","feb","mrt","apr","mei","jun","jul","aug","sept","okt","nov","dec"][m-1]
 
-def build_urls(taskcodes: List[str], days: int, client_id: str) -> List[str]:
-    return [
-        f"https://data.sportlink.com/vrijwilligers?vrijwilligerstaakcode={code}&aantaldagen={int(days)}&client_id={client_id}"
-        for code in taskcodes
-    ]
+def build_urls(taskcodes: List[str],
+               days: int,
+               client_id: str,
+               weekoffset: int = -1,
+               fields: Optional[str] = FIELDS) -> List[str]:
+    base = "https://data.sportlink.com/vrijwilligers"
+    urls = []
+    for code in taskcodes:
+        url = (
+            f"{base}?vrijwilligerstaakcode={code}"
+            f"&aantaldagen={int(days)}"
+            f"&client_id={client_id}"
+            f"&weekoffset={int(weekoffset)}"
+        )
+        if fields:
+            url += f"&fields={quote(fields)}"
+        urls.append(url)
+    return urls
 
 def http_get_json(url: str, timeout: int = 30, max_retries: int = 3, backoff_factor: float = 0.8):
-    headers = {"User-Agent": "CKC-Rooster/StreamlitLite", "Accept": "application/json"}
+    headers = {"User-Agent": "CKC-Rooster/Streamlit", "Accept": "application/json"}
     last_err = None
     for attempt in range(1, max_retries + 1):
         try:
@@ -89,7 +106,7 @@ def _pick(colnames, candidates):
     return None
 
 def normalize_dataframe(data, tz_str: str):
-    """df: Naam, Datum, Dag, Tijd vanaf, Tijd tot, Week, ISO_Year."""
+    """df: Naam, Datum (tz-naive), Dag, Tijd vanaf, Tijd tot, Week, ISO_Year."""
     df_raw = pd.DataFrame(data)
     cols = df_raw.columns.tolist()
 
@@ -116,7 +133,7 @@ def normalize_dataframe(data, tz_str: str):
     })
 
     dat = pd.to_datetime(out["Datum vanaf"], errors="coerce", utc=True)
-    dat = dat.dt.tz_convert(tz_str).dt.tz_localize(None)
+    dat = dat.dt.tz_convert(tz_str).dt.tz_localize(None)  # tz-naive
     out["Datum"] = dat
     out = out.dropna(subset=["Datum"])
 
@@ -131,6 +148,14 @@ def normalize_dataframe(data, tz_str: str):
     out["Tijd tot"] = t_to.dt.strftime("%H:%M").fillna("")
     return out
 
+def filter_from_current_week(df: pd.DataFrame, tz_str: str) -> pd.DataFrame:
+    """
+    Houd alleen rijen met Datum-dag >= maandag (00:00) van de huidige week (tz-naive).
+    """
+    now_naive = pd.Timestamp.now().tz_localize(tz_str).tz_localize(None)
+    monday_naive = (now_naive - pd.Timedelta(days=int(now_naive.weekday()))).normalize()
+    return df[df["Datum"].dt.normalize() >= monday_naive].copy()
+
 def monday_of_week(d: pd.Timestamp) -> pd.Timestamp:
     return d - pd.Timedelta(days=int(d.weekday()))
 
@@ -143,7 +168,7 @@ def derive_weeks(df: pd.DataFrame, tz_str: str, horizon_weeks_if_empty=4):
             week_mondays[(y, w)] = monday_of_week(d0)
         return weeks_pairs, week_mondays
 
-    now = pd.Timestamp.now(tz=tz_str).tz_localize(None)
+    now = pd.Timestamp.now().tz_localize(tz_str).tz_localize(None)
     mon0 = now - pd.Timedelta(days=int(now.weekday()))
     weeks_pairs = []; week_mondays = {}
     for i in range(horizon_weeks_if_empty):
@@ -164,6 +189,16 @@ def build_matrix(df: pd.DataFrame,
         df = df[df["Dag"].isin(days_subset)].copy()
 
     weeks_pairs, week_mondays = derive_weeks(df, tz_str, horizon_weeks_if_empty)
+
+    # Huidige week altijd aanwezig (tz-naive)
+    now_naive = pd.Timestamp.now().tz_localize(tz_str).tz_localize(None)
+    iso_now = now_naive.isocalendar()
+    current_pair = (int(iso_now.year), int(iso_now.week))
+    if current_pair not in weeks_pairs:
+        weeks_pairs.append(current_pair)
+        mon_cur = (now_naive - pd.Timedelta(days=int(now_naive.weekday()))).normalize()
+        week_mondays[current_pair] = mon_cur
+        weeks_pairs = sorted(weeks_pairs)
 
     if extra_weeks_pairs:
         for p in extra_weeks_pairs:
@@ -191,7 +226,7 @@ def build_matrix(df: pd.DataFrame,
         columns=[week_label(p) for p in weeks_pairs]
     )
 
-    # MultiIndex lexsorten (geen PerformanceWarning) in jouw dagvolgorde
+    # MultiIndex lexsorten in jouw dagvolgorde
     mi = matrix.index
     dag = pd.CategoricalIndex([tpl[0] for tpl in mi], categories=DAYS_NL, ordered=True, name="Dag")
     tvan = [tpl[1] for tpl in mi]
@@ -275,7 +310,7 @@ def format_sheet(ws, matrix, slots: Dict[str, List[Tuple[str,str]]], tz_str: str
 
     # Timestamp in A1
     try:
-        now = pd.Timestamp.now(tz=tz_str).tz_localize(None)
+        now = pd.Timestamp.now().tz_localize(tz_str).tz_localize(None)
     except Exception:
         now = datetime.now()
     stamp = f"{now.day} {month_short_nl(now.month)} {now.strftime('%H:%M')}"
@@ -338,7 +373,7 @@ def apply_manual_annotations(ws, matrix, annotations, week_label_style: str, slo
 def parse_manual_text(text: str):
     entries = []
     if not text: return entries
-    now = pd.Timestamp.now(tz=TZ)
+    now = pd.Timestamp.now().tz_localize(TZ)  # aware, alleen voor vergelijking
     for line in text.splitlines():
         s = line.strip()
         if not s or s.startswith("#"): continue
@@ -347,7 +382,7 @@ def parse_manual_text(text: str):
         date_str, time_str = parts[0], parts[1]
         txt = " ".join(parts[2:]).strip()
         try:
-            dt = pd.Timestamp(f"{date_str} {time_str}", tz=TZ)
+            dt = pd.Timestamp(f"{date_str} {time_str}").tz_localize(TZ)
         except Exception:
             continue
         if dt < now: continue
@@ -356,7 +391,7 @@ def parse_manual_text(text: str):
         if time_str not in starts: continue
         iso = dt.isocalendar()
         entries.append({
-            "date": dt.tz_convert(TZ).tz_localize(None),
+            "date": dt.tz_localize(None),  # tz-naive verderop in Excel
             "time_from": time_str,
             "text": txt,
             "iso_year": int(iso.year),
@@ -394,8 +429,8 @@ def make_excel(df_bar, df_ck, annotations):
 # UI (simpel & mobiel)
 # =========================
 st.set_page_config(page_title="Rooster generator", page_icon="🗓️", layout="centered")
-st.markdown("<h1 style='text-align:center;margin-bottom:0'>🗓️ CKC Rooster generator</h1>", unsafe_allow_html=True)
-st.caption("Sportlink → Excel · 60 dagen vooruit")
+st.markdown("<h1 style='text-align:center;margin-bottom:0'>🗓️ Rooster generator</h1>", unsafe_allow_html=True)
+st.caption("Sportlink → Excel · vaste instellingen (Europe/Amsterdam, weekoffset=-1, gefilterd vanaf huidige week)")
 
 manual_text = st.text_area(
     "Handmatige input (optioneel, één per regel)",
@@ -403,17 +438,18 @@ manual_text = st.text_area(
     height=120
 )
 
-if st.button("Genereer rooster"):
+if st.button("Genereer rooster", use_container_width=True):
     try:
         with st.spinner("Ophalen en bouwen…"):
-            urls_bar = build_urls(BAR_CODES, DAYS_AHEAD, DEFAULT_CLIENT_ID)
-            urls_ck  = build_urls(CK_CODES,  DAYS_AHEAD, DEFAULT_CLIENT_ID)
+            urls_bar = build_urls(BAR_CODES, DAYS_AHEAD, DEFAULT_CLIENT_ID, weekoffset=WEEK_OFFSET, fields=FIELDS)
+            urls_ck  = build_urls(CK_CODES,  DAYS_AHEAD, DEFAULT_CLIENT_ID, weekoffset=WEEK_OFFSET, fields=FIELDS)
 
             all_bar = sum([http_get_json(u) for u in urls_bar], [])
             all_ck  = sum([http_get_json(u) for u in urls_ck],  [])
 
-            df_bar = normalize_dataframe(all_bar, TZ)
-            df_ck  = normalize_dataframe(all_ck,  TZ)
+            # Normalize + FILTER vanaf maandag van deze week (tz-naive)
+            df_bar = filter_from_current_week(normalize_dataframe(all_bar, TZ), TZ)
+            df_ck  = filter_from_current_week(normalize_dataframe(all_ck,  TZ), TZ)
 
             annotations = parse_manual_text(manual_text)
             xlsx = make_excel(df_bar, df_ck, annotations)
@@ -428,4 +464,3 @@ if st.button("Genereer rooster"):
         )
     except Exception as e:
         st.error(f"Er ging iets mis: {e}")
-
