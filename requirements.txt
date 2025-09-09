@@ -2,3 +2,4 @@ streamlit
 pandas
 requests
 openpyxl>=3.1.2
+backports.zoneinfo; python_version<"3.9"
