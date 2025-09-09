@@ -18,9 +18,9 @@ try:
 except Exception:  # pragma: no cover
     from backports.zoneinfo import ZoneInfo  # fallback voor oudere omgevingen
 
-def now_naive_in_tz(tz_str: str) -> datetime:
-    """Echte kloktijd in deze tz, zonder tz-info (naive)."""
-    return datetime.now(ZoneInfo(tz_str)).replace(tzinfo=None)
+def now_naive_in_tz(tz_str: str) -> pd.Timestamp:
+    """Echte kloktijd in deze tz, zonder tz-info (naive Pandas Timestamp)."""
+    return pd.Timestamp(datetime.now(ZoneInfo(tz_str))).tz_localize(None)
 
 def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     """Huidige tijd als tz-aware pandas Timestamp in gewenste tz."""
