@@ -12,6 +12,20 @@ from datetime import datetime
 from urllib.parse import quote
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
+# ===== tijdzone helper (robust, werkt ook als host in UTC draait) =====
+try:
+    from zoneinfo import ZoneInfo  # Python 3.9+
+except Exception:  # pragma: no cover
+    from backports.zoneinfo import ZoneInfo  # fallback voor oudere omgevingen
+
+def now_naive_in_tz(tz_str: str) -> datetime:
+    """Echte kloktijd in deze tz, zonder tz-info (naive)."""
+    return datetime.now(ZoneInfo(tz_str)).replace(tzinfo=None)
+
+def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
+    """Huidige tijd als tz-aware pandas Timestamp in gewenste tz."""
+    return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
+
 # Onderdruk macOS LibreSSL waarschuwing
 warnings.filterwarnings("ignore", message=r"urllib3 v2 only supports OpenSSL.*", category=Warning, module=r"urllib3\.__init__")
 
@@ -149,10 +163,8 @@ def normalize_dataframe(data, tz_str: str):
     return out
 
 def filter_from_current_week(df: pd.DataFrame, tz_str: str) -> pd.DataFrame:
-    """
-    Houd alleen rijen met Datum-dag >= maandag (00:00) van de huidige week (tz-naive).
-    """
-    now_naive = pd.Timestamp.now().tz_localize(tz_str).tz_localize(None)
+    """Houd alleen rijen met Datum-dag >= maandag (00:00) van de huidige week (tz-naive)."""
+    now_naive = now_naive_in_tz(tz_str)
     monday_naive = (now_naive - pd.Timedelta(days=int(now_naive.weekday()))).normalize()
     return df[df["Datum"].dt.normalize() >= monday_naive].copy()
 
@@ -168,7 +180,7 @@ def derive_weeks(df: pd.DataFrame, tz_str: str, horizon_weeks_if_empty=4):
             week_mondays[(y, w)] = monday_of_week(d0)
         return weeks_pairs, week_mondays
 
-    now = pd.Timestamp.now().tz_localize(tz_str).tz_localize(None)
+    now = now_naive_in_tz(tz_str)
     mon0 = now - pd.Timedelta(days=int(now.weekday()))
     weeks_pairs = []; week_mondays = {}
     for i in range(horizon_weeks_if_empty):
@@ -191,7 +203,7 @@ def build_matrix(df: pd.DataFrame,
     weeks_pairs, week_mondays = derive_weeks(df, tz_str, horizon_weeks_if_empty)
 
     # Huidige week altijd aanwezig (tz-naive)
-    now_naive = pd.Timestamp.now().tz_localize(tz_str).tz_localize(None)
+    now_naive = now_naive_in_tz(tz_str)
     iso_now = now_naive.isocalendar()
     current_pair = (int(iso_now.year), int(iso_now.week))
     if current_pair not in weeks_pairs:
@@ -308,11 +320,8 @@ def format_sheet(ws, matrix, slots: Dict[str, List[Tuple[str,str]]], tz_str: str
                 max_len = max(max_len, len(str(cell.value)))
         ws.column_dimensions[col_cells[0].column_letter].width = min(max(int(max_len*0.75)+2, 10), 24)
 
-    # Timestamp in A1
-    try:
-        now = pd.Timestamp.now().tz_localize(tz_str).tz_localize(None)
-    except Exception:
-        now = datetime.now()
+    # Timestamp in A1 — nu met echte Amsterdamse kloktijd
+    now = now_naive_in_tz(tz_str)
     stamp = f"{now.day} {month_short_nl(now.month)} {now.strftime('%H:%M')}"
     a1 = ws.cell(row=1, column=1); a1.value = stamp
     try: a1.font = Font(italic=True, color="FF666666")
@@ -373,7 +382,7 @@ def apply_manual_annotations(ws, matrix, annotations, week_label_style: str, slo
 def parse_manual_text(text: str):
     entries = []
     if not text: return entries
-    now = pd.Timestamp.now().tz_localize(TZ)  # aware, alleen voor vergelijking
+    now_aware = now_aware_in_tz(TZ)
     for line in text.splitlines():
         s = line.strip()
         if not s or s.startswith("#"): continue
@@ -382,16 +391,17 @@ def parse_manual_text(text: str):
         date_str, time_str = parts[0], parts[1]
         txt = " ".join(parts[2:]).strip()
         try:
-            dt = pd.Timestamp(f"{date_str} {time_str}").tz_localize(TZ)
+            # maak een aware timestamp in Amsterdam
+            dt_aware = pd.Timestamp(f"{date_str} {time_str}", tz=ZoneInfo(TZ))
         except Exception:
             continue
-        if dt < now: continue
-        day_name = DAYS_NL[int(dt.weekday())]
+        if dt_aware < now_aware: continue
+        day_name = DAYS_NL[int(dt_aware.weekday())]
         starts = [a for a,b in DEFAULT_SLOTS.get(day_name, [])]
         if time_str not in starts: continue
-        iso = dt.isocalendar()
+        iso = dt_aware.isocalendar()
         entries.append({
-            "date": dt.tz_localize(None),  # tz-naive verderop in Excel
+            "date": dt_aware.tz_convert(None),  # tz-naive voor Excel
             "time_from": time_str,
             "text": txt,
             "iso_year": int(iso.year),
@@ -429,7 +439,7 @@ def make_excel(df_bar, df_ck, annotations):
 # UI (simpel & mobiel)
 # =========================
 st.set_page_config(page_title="Rooster generator", page_icon="🗓️", layout="centered")
-st.markdown("<h1 style='text-align:center;margin-bottom:0'>🗓️ CKC Rooster Generator</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align:center;margin-bottom:0'>🗓️ CKC Rooster generator</h1>", unsafe_allow_html=True)
 st.caption("Sportlink → Excel · vaste instellingen (Europe/Amsterdam, weekoffset=-1, gefilterd vanaf huidige week)")
 
 manual_text = st.text_area(
