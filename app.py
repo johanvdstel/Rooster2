@@ -12,7 +12,7 @@ from datetime import datetime
 from urllib.parse import quote
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
-# ===== tijdzone helper (robust, werkt ook als host in UTC draait) =====
+# ===== tijdzone helpers (robust, ook als host in UTC draait) =====
 try:
     from zoneinfo import ZoneInfo  # Python 3.9+
 except Exception:  # pragma: no cover
@@ -25,6 +25,17 @@ def now_naive_in_tz(tz_str: str) -> pd.Timestamp:
 def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     """Huidige tijd als tz-aware pandas Timestamp in gewenste tz."""
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
+
+# ===== Streamlit helpers (reset na download) =====
+def _mark_downloaded():
+    st.session_state["_downloaded"] = True
+
+def _safe_rerun():
+    # Streamlit 1.30+: st.rerun; oudere versies: st.experimental_rerun
+    try:
+        st.rerun()
+    except Exception:
+        st.experimental_rerun()
 
 # Onderdruk macOS LibreSSL waarschuwing
 warnings.filterwarnings("ignore", message=r"urllib3 v2 only supports OpenSSL.*", category=Warning, module=r"urllib3\.__init__")
@@ -320,7 +331,7 @@ def format_sheet(ws, matrix, slots: Dict[str, List[Tuple[str,str]]], tz_str: str
                 max_len = max(max_len, len(str(cell.value)))
         ws.column_dimensions[col_cells[0].column_letter].width = min(max(int(max_len*0.75)+2, 10), 24)
 
-    # Timestamp in A1 — nu met echte Amsterdamse kloktijd
+    # Timestamp in A1 — echte Amsterdamse kloktijd
     now = now_naive_in_tz(tz_str)
     stamp = f"{now.day} {month_short_nl(now.month)} {now.strftime('%H:%M')}"
     a1 = ws.cell(row=1, column=1); a1.value = stamp
@@ -439,7 +450,7 @@ def make_excel(df_bar, df_ck, annotations):
 # UI (simpel & mobiel)
 # =========================
 st.set_page_config(page_title="Rooster generator", page_icon="🗓️", layout="centered")
-st.markdown("<h1 style='text-align:center;margin-bottom:0'>🗓️ CKC Rooster generator</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align:center;margin-bottom:0'>🗓️ Rooster generator</h1>", unsafe_allow_html=True)
 st.caption("Sportlink → Excel · vaste instellingen (Europe/Amsterdam, weekoffset=-1, gefilterd vanaf huidige week)")
 
 manual_text = st.text_area(
@@ -470,7 +481,15 @@ if st.button("Genereer rooster", use_container_width=True):
             data=xlsx.getvalue(),
             file_name="rooster.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
+            use_container_width=True,
+            on_click=_mark_downloaded,  # <- zet vlag
         )
+
+        # Auto-reset zodra de download gestart is (werkt prettig op iPhone)
+        if st.session_state.get("_downloaded"):
+            st.toast("Download gestart — app wordt gereset…", icon="✅")
+            st.session_state.clear()
+            _safe_rerun()
+
     except Exception as e:
         st.error(f"Er ging iets mis: {e}")
