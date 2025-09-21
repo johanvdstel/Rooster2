@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import io
-import time
-import base64
 import warnings
 from typing import List, Dict, Tuple, Optional
 
 import pandas as pd
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 from datetime import datetime
 from urllib.parse import quote
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -65,7 +62,7 @@ DAY_COLORS = {
 DEFAULT_SLOTS: Dict[str, List[Tuple[str, str]]] = {
     "Maandag":   [("18:00","19:00"), ("19:00","20:00")],
     "Dinsdag":   [("18:00","22:00")],
-    "Woensdag":  [("17:00","18:00"), ("18:00","19:00"), ("19:00","22:00")],
+    "Woensdag":  [("17:00","18:00"), ("18:00","19:00"), ("19:00","22:00")],  # nieuwe shift toegevoegd
     "Donderdag": [("18:00","22:00")],
     "Vrijdag":   [("18:00","20:30"), ("20:30","23:00")],
     "Zaterdag":  [("07:30","10:00"), ("10:00","12:30"),
@@ -113,7 +110,7 @@ def http_get_json(url: str, timeout: int = 30, max_retries: int = 3, backoff_fac
         except Exception as e:
             last_err = e
             if attempt < max_retries:
-                time.sleep(backoff_factor * (2 ** (attempt - 1)))
+                import time as _t; _t.sleep(backoff_factor * (2 ** (attempt - 1)))
             else:
                 raise
     raise last_err
@@ -450,11 +447,11 @@ def make_excel(df_bar, df_ck, annotations):
 # =========================
 st.set_page_config(page_title="Rooster generator", page_icon="🗓️", layout="centered")
 st.markdown("<h1 style='text-align:center;margin-bottom:0'>🗓️ Rooster generator</h1>", unsafe_allow_html=True)
-st.caption("Sportlink → Excel · vaste instellingen (Europe/Amsterdam, weekoffset=-1, gefilterd vanaf huidige week)")
+st.caption("Sportlink → Excel · vaste instellingen (Europe/Amsterdam), weekoffset=-1, gefilterd vanaf huidige week")
 
 manual_text = st.text_area(
     "Handmatige input (optioneel, één per regel)",
-    placeholder="YYYY-MM-DD HH:MM tekst\n2025-09-12 20:30 klaverjassen",
+    placeholder="YYYY-MM-DD HH:MM tekst\n2025-09-17 17:00 Voorbereiden bar",
     height=120
 )
 
@@ -474,63 +471,7 @@ if st.button("Genereer rooster", use_container_width=True):
             annotations = parse_manual_text(manual_text)
             xlsx = make_excel(df_bar, df_ck, annotations)
 
-        st.success("Klaar! Je kunt het rooster openen of downloaden.")
-
-        # === iOS/PWA-vriendelijke open-knoppen (vermijden iOS 'Open met Excel' overlay) ===
-        xlsx_b64 = base64.b64encode(xlsx.getvalue()).decode("ascii")
-        components.html(
-            f"""
-            <div style="display:flex;gap:12px;flex-wrap:wrap;margin:6px 0 10px">
-              <button id="openNewTab" style="padding:10px 14px;border:1px solid #bbb;border-radius:6px;background:#fff;cursor:pointer;">
-                📄 Open in Excel (nieuw tabblad)
-              </button>
-              <button id="openSameTab" style="padding:10px 14px;border:1px solid #bbb;border-radius:6px;background:#fff;cursor:pointer;">
-                ↪︎ Open in dit venster
-              </button>
-            </div>
-            <script>
-              (function() {{
-                const b64 = "{xlsx_b64}";
-                function b64ToArrayBuffer(b64) {{
-                  const binary_string = window.atob(b64);
-                  const len = binary_string.length;
-                  const bytes = new Uint8Array(len);
-                  for (let i = 0; i < len; i++) bytes[i] = binary_string.charCodeAt(i);
-                  return bytes.buffer;
-                }}
-                function makeBlobUrl() {{
-                  const mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-                  const buffer = b64ToArrayBuffer(b64);
-                  const blob = new Blob([buffer], {{type: mime}});
-                  return URL.createObjectURL(blob);
-                }}
-
-                document.getElementById("openNewTab").onclick = function() {{
-                  const url = makeBlobUrl();
-                  try {{
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.target = '_blank';
-                    a.rel = 'noopener noreferrer external';
-                    document.body.appendChild(a);
-                    a.click();
-                  }} catch (e) {{
-                    window.open(url, '_blank');
-                  }}
-                  setTimeout(() => URL.revokeObjectURL(url), 60000);
-                }};
-
-                document.getElementById("openSameTab").onclick = function() {{
-                  const url = makeBlobUrl();
-                  window.location.href = url; // navigeer weg uit PWA, geen iOS overlay
-                }};
-              }})();
-            </script>
-            """,
-            height=90,
-        )
-
-        # Klassieke download (fallback) — prima in gewone browser/desktop
+        st.success("Klaar! Download hieronder het Excel-bestand.")
         st.download_button(
             "⬇️ Download rooster.xlsx",
             data=xlsx.getvalue(),
