@@ -2,12 +2,14 @@
 # -*- coding: utf-8 -*-
 import io
 import time
+import base64
 import warnings
 from typing import List, Dict, Tuple, Optional
 
 import pandas as pd
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from datetime import datetime
 from urllib.parse import quote
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -26,19 +28,13 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     """Huidige tijd als tz-aware pandas Timestamp in gewenste tz."""
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
-# ===== Streamlit helpers (reset na download) =====
-def _mark_downloaded():
-    st.session_state["_downloaded"] = True
-
-def _safe_rerun():
-    # Streamlit 1.30+: st.rerun; oudere versies: st.experimental_rerun
-    try:
-        st.rerun()
-    except Exception:
-        st.experimental_rerun()
-
 # Onderdruk macOS LibreSSL waarschuwing
-warnings.filterwarnings("ignore", message=r"urllib3 v2 only supports OpenSSL.*", category=Warning, module=r"urllib3\.__init__")
+warnings.filterwarnings(
+    "ignore",
+    message=r"urllib3 v2 only supports OpenSSL.*",
+    category=Warning,
+    module=r"urllib3\.__init__"
+)
 
 # Rich text detectie (voor rode annotaties bovenaan)
 try:
@@ -69,7 +65,7 @@ DAY_COLORS = {
 DEFAULT_SLOTS: Dict[str, List[Tuple[str, str]]] = {
     "Maandag":   [("18:00","19:00"), ("19:00","20:00")],
     "Dinsdag":   [("18:00","22:00")],
-    "Woensdag":  [("18:00","19:00"), ("19:00","22:00")],
+    "Woensdag":  [("17:00","18:00"), ("18:00","19:00"), ("19:00","22:00")],
     "Donderdag": [("18:00","22:00")],
     "Vrijdag":   [("18:00","20:30"), ("20:30","23:00")],
     "Zaterdag":  [("07:30","10:00"), ("10:00","12:30"),
@@ -372,10 +368,12 @@ def apply_manual_annotations(ws, matrix, annotations, week_label_style: str, slo
         if _HAS_RICHTEXT:
             try:
                 rt = CellRichText()
-                rt.append(TextBlock(InlineFont(color="FF0000"), anno_text + "\n"))  # rood bovenaan
+                # Handmatige input: rood
+                rt.append(TextBlock(InlineFont(color="FF0000"), anno_text + "\n"))
                 if cur.strip():
-                    rt.append("---\n")
-                    rt.append(cur)
+                    # Divider én bestaande namen: expliciet zwart
+                    rt.append(TextBlock(InlineFont(color="FF000000"), "---\n"))
+                    rt.append(TextBlock(InlineFont(color="FF000000"), cur))
                 cell.value = rt
                 cell.alignment = Alignment(wrap_text=True, vertical="top")
                 used_richtext = True
@@ -387,6 +385,7 @@ def apply_manual_annotations(ws, matrix, annotations, week_label_style: str, slo
                 cell.value = f"{anno_text}\n---\n{cur}"
             else:
                 cell.value = anno_text
+            # Fallback: alles rood; (Excel toont dan alles rood, maar tenminste zichtbaar)
             cell.font = Font(color="FF0000")
             cell.alignment = Alignment(wrap_text=True, vertical="top")
 
@@ -450,7 +449,7 @@ def make_excel(df_bar, df_ck, annotations):
 # UI (simpel & mobiel)
 # =========================
 st.set_page_config(page_title="Rooster generator", page_icon="🗓️", layout="centered")
-st.markdown("<h1 style='text-align:center;margin-bottom:0'>🗓️ CKC Rooster generator</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align:center;margin-bottom:0'>🗓️ Rooster generator</h1>", unsafe_allow_html=True)
 st.caption("Sportlink → Excel · vaste instellingen (Europe/Amsterdam, weekoffset=-1, gefilterd vanaf huidige week)")
 
 manual_text = st.text_area(
@@ -475,21 +474,70 @@ if st.button("Genereer rooster", use_container_width=True):
             annotations = parse_manual_text(manual_text)
             xlsx = make_excel(df_bar, df_ck, annotations)
 
-        st.success("Klaar! Download hieronder het Excel-bestand.")
+        st.success("Klaar! Je kunt het rooster openen of downloaden.")
+
+        # === iOS/PWA-vriendelijke open-knoppen (vermijden iOS 'Open met Excel' overlay) ===
+        xlsx_b64 = base64.b64encode(xlsx.getvalue()).decode("ascii")
+        components.html(
+            f"""
+            <div style="display:flex;gap:12px;flex-wrap:wrap;margin:6px 0 10px">
+              <button id="openNewTab" style="padding:10px 14px;border:1px solid #bbb;border-radius:6px;background:#fff;cursor:pointer;">
+                📄 Open in Excel (nieuw tabblad)
+              </button>
+              <button id="openSameTab" style="padding:10px 14px;border:1px solid #bbb;border-radius:6px;background:#fff;cursor:pointer;">
+                ↪︎ Open in dit venster
+              </button>
+            </div>
+            <script>
+              (function() {{
+                const b64 = "{xlsx_b64}";
+                function b64ToArrayBuffer(b64) {{
+                  const binary_string = window.atob(b64);
+                  const len = binary_string.length;
+                  const bytes = new Uint8Array(len);
+                  for (let i = 0; i < len; i++) bytes[i] = binary_string.charCodeAt(i);
+                  return bytes.buffer;
+                }}
+                function makeBlobUrl() {{
+                  const mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+                  const buffer = b64ToArrayBuffer(b64);
+                  const blob = new Blob([buffer], {{type: mime}});
+                  return URL.createObjectURL(blob);
+                }}
+
+                document.getElementById("openNewTab").onclick = function() {{
+                  const url = makeBlobUrl();
+                  try {{
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.target = '_blank';
+                    a.rel = 'noopener noreferrer external';
+                    document.body.appendChild(a);
+                    a.click();
+                  }} catch (e) {{
+                    window.open(url, '_blank');
+                  }}
+                  setTimeout(() => URL.revokeObjectURL(url), 60000);
+                }};
+
+                document.getElementById("openSameTab").onclick = function() {{
+                  const url = makeBlobUrl();
+                  window.location.href = url; // navigeer weg uit PWA, geen iOS overlay
+                }};
+              }})();
+            </script>
+            """,
+            height=90,
+        )
+
+        # Klassieke download (fallback) — prima in gewone browser/desktop
         st.download_button(
-            "Download rooster.xlsx",
+            "⬇️ Download rooster.xlsx",
             data=xlsx.getvalue(),
             file_name="rooster.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
-            on_click=_mark_downloaded,  # <- zet vlag
         )
-
-        # Auto-reset zodra de download gestart is (werkt prettig op iPhone)
-        if st.session_state.get("_downloaded"):
-            st.toast("Download gestart — app wordt gereset…", icon="✅")
-            st.session_state.clear()
-            _safe_rerun()
 
     except Exception as e:
         st.error(f"Er ging iets mis: {e}")
