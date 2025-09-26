@@ -8,7 +8,7 @@ import pandas as pd
 import requests
 import streamlit as st
 from datetime import datetime
-from urllib.parse import quote
+from urllib.parse import quote, urlparse, parse_qs, urlencode, urlunparse
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 # ===== tijdzone helpers (robust, ook als host in UTC draait) =====
@@ -62,7 +62,7 @@ DAY_COLORS = {
 DEFAULT_SLOTS: Dict[str, List[Tuple[str, str]]] = {
     "Maandag":   [("18:00","19:00"), ("19:00","20:00")],
     "Dinsdag":   [("18:00","22:00")],
-    "Woensdag":  [("17:00","18:00"), ("18:00","19:00"), ("19:00","22:00")],  # nieuwe shift toegevoegd
+    "Woensdag":  [("17:00","18:00"), ("18:00","19:00"), ("19:00","22:00")],  # extra shift
     "Donderdag": [("18:00","22:00")],
     "Vrijdag":   [("18:00","20:30"), ("20:30","23:00")],
     "Zaterdag":  [("07:30","10:00"), ("10:00","12:30"),
@@ -70,6 +70,9 @@ DEFAULT_SLOTS: Dict[str, List[Tuple[str, str]]] = {
                   ("17:30","20:00"), ("20:00","22:30")],
     "Zondag":    [("10:00","12:30"), ("12:30","15:00")],
 }
+
+# ====== HARDCODED DROPBOX LINK (wordt automatisch naar dl=1 gezet) ======
+DROPBOX_INPUT_URL = "https://www.dropbox.com/scl/fi/ukcs87y9h1j27uyzcotig/rooster_input.txt?rlkey=fx0ayzshabo7zikun620m61hh&st=vtrlzr8k&dl=0"
 
 # ---------- Helpers ----------
 def month_short_nl(m:int) -> str:
@@ -387,6 +390,7 @@ def apply_manual_annotations(ws, matrix, annotations, week_label_style: str, slo
             cell.alignment = Alignment(wrap_text=True, vertical="top")
 
 def parse_manual_text(text: str):
+    """Verwerk platte tekst met regels 'YYYY-MM-DD HH:MM tekst' naar annotaties."""
     entries = []
     if not text: return entries
     now_aware = now_aware_in_tz(TZ)
@@ -398,7 +402,6 @@ def parse_manual_text(text: str):
         date_str, time_str = parts[0], parts[1]
         txt = " ".join(parts[2:]).strip()
         try:
-            # maak een aware timestamp in Amsterdam
             dt_aware = pd.Timestamp(f"{date_str} {time_str}", tz=ZoneInfo(TZ))
         except Exception:
             continue
@@ -416,6 +419,28 @@ def parse_manual_text(text: str):
             "day": day_name,
         })
     return entries
+
+# -------- Dropbox helper --------
+def _ensure_dropbox_direct(url: str) -> str:
+    """Zet een standaard Dropbox-deellink om naar direct-download (dl=1)."""
+    if not url:
+        return url
+    if "dropbox.com" not in url:
+        return url
+    try:
+        pr = urlparse(url)
+        qs = parse_qs(pr.query)
+        qs["dl"] = ["1"]  # forceer download
+        new_query = urlencode({k: v[0] for k, v in qs.items()})
+        return urlunparse((pr.scheme, pr.netloc, pr.path, pr.params, new_query, pr.fragment))
+    except Exception:
+        return url.replace("dl=0", "dl=1") if "dl=" in url else (url + ("&" if "?" in url else "?") + "dl=1")
+
+def read_manual_text_from_dropbox(timeout: int = 30) -> str:
+    direct = _ensure_dropbox_direct(DROPBOX_INPUT_URL)
+    r = requests.get(direct, timeout=timeout)
+    r.raise_for_status()
+    return r.text  # verwacht platte tekst
 
 def make_excel(df_bar, df_ck, annotations):
     extra_weeks_pairs = sorted({(a["iso_year"], a["iso_week"]) for a in annotations})
@@ -446,14 +471,10 @@ def make_excel(df_bar, df_ck, annotations):
 # UI (simpel & mobiel)
 # =========================
 st.set_page_config(page_title="Rooster generator", page_icon="🗓️", layout="centered")
-st.markdown("<h1 style='text-align:center;margin-bottom:0'>🗓️ CKC Rooster generator</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align:center;margin-bottom:0'>🗓️ Rooster generator</h1>", unsafe_allow_html=True)
 st.caption("Sportlink → Excel · vaste instellingen (Europe/Amsterdam), weekoffset=-1, gefilterd vanaf huidige week")
 
-manual_text = st.text_area(
-    "Handmatige input (optioneel, één per regel)",
-    placeholder="YYYY-MM-DD HH:MM tekst\n2025-09-17 17:00 Voorbereiden bar",
-    height=120
-)
+use_dropbox = st.checkbox("Handmatige input via Dropbox meenemen")
 
 if st.button("Genereer rooster", use_container_width=True):
     try:
@@ -468,6 +489,10 @@ if st.button("Genereer rooster", use_container_width=True):
             df_bar = filter_from_current_week(normalize_dataframe(all_bar, TZ), TZ)
             df_ck  = filter_from_current_week(normalize_dataframe(all_ck,  TZ), TZ)
 
+            manual_text = ""
+            if use_dropbox:
+                manual_text = read_manual_text_from_dropbox()
+
             annotations = parse_manual_text(manual_text)
             xlsx = make_excel(df_bar, df_ck, annotations)
 
@@ -480,5 +505,7 @@ if st.button("Genereer rooster", use_container_width=True):
             use_container_width=True,
         )
 
+    except requests.HTTPError as e:
+        st.error(f"Fout bij ophalen Dropbox-bestand: {e}")
     except Exception as e:
         st.error(f"Er ging iets mis: {e}")
