@@ -390,42 +390,65 @@ def apply_manual_annotations(ws, matrix, annotations, week_label_style: str, slo
             cell.alignment = Alignment(wrap_text=True, vertical="top")
 
 def parse_manual_text(text: str):
-    """Verwerk platte tekst met regels 'YYYY-MM-DD HH:MM tekst' naar annotaties."""
+    """Verwerk regels 'YYYY-MM-DD HH:MM tekst' naar annotaties.
+       Neem ALLES mee vanaf maandag 00:00 van de huidige week (Europe/Amsterdam).
+       Regels vóór de lopende week worden genegeerd.
+    """
     entries = []
-    if not text: return entries
-    now_aware = now_aware_in_tz(TZ)
+    if not text:
+        return entries
+
+    # Maandag 00:00 van de huidige week (tz-aware, Amsterdam)
+    now_aw = now_aware_in_tz(TZ)  # pandas.Timestamp, tz-aware
+    monday_aw = (now_aw - pd.Timedelta(days=int(now_aw.weekday()))).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+
     for line in text.splitlines():
         s = line.strip()
-        if not s or s.startswith("#"): continue
+        if not s or s.startswith("#"):
+            continue
+
         parts = s.split()
-        if len(parts) < 3: continue
+        if len(parts) < 3:
+            continue
+
         date_str, time_str = parts[0], parts[1]
         txt = " ".join(parts[2:]).strip()
+
+        # Parse naar tz-aware in Amsterdam
         try:
-            dt_aware = pd.Timestamp(f"{date_str} {time_str}", tz=ZoneInfo(TZ))
+            dt_aw = pd.Timestamp(f"{date_str} {time_str}", tz=ZoneInfo(TZ))
         except Exception:
             continue
-        if dt_aware < now_aware: continue
-        day_name = DAYS_NL[int(dt_aware.weekday())]
-        starts = [a for a,b in DEFAULT_SLOTS.get(day_name, [])]
-        if time_str not in starts: continue
-        iso = dt_aware.isocalendar()
+
+        # Filter: alleen vanaf de lopende week (>= maandag 00:00)
+        if dt_aw < monday_aw:
+            continue
+
+        day_name = DAYS_NL[int(dt_aw.weekday())]
+
+        # Tijd moet exact op een 'start' van een slot liggen
+        starts = [a for a, b in DEFAULT_SLOTS.get(day_name, [])]
+        if time_str not in starts:
+            continue
+
+        iso = dt_aw.isocalendar()
         entries.append({
-            "date": dt_aware.tz_convert(None),  # tz-naive voor Excel
+            "date": dt_aw.tz_convert(None),  # tz-naive voor Excel
             "time_from": time_str,
             "text": txt,
             "iso_year": int(iso.year),
             "iso_week": int(iso.week),
             "day": day_name,
         })
+
     return entries
 
 # -------- Dropbox helper --------
 def _ensure_dropbox_direct(url: str) -> str:
     """Zet een standaard Dropbox-deellink om naar direct-download (dl=1)."""
-    if not url:
-        return url
-    if "dropbox.com" not in url:
+    if not url or "dropbox.com" not in url:
         return url
     try:
         pr = urlparse(url)
