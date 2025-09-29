@@ -11,21 +11,19 @@ from datetime import datetime
 from urllib.parse import quote, urlparse, parse_qs, urlencode, urlunparse
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
-# ===== tijdzone helpers (robust, ook als host in UTC draait) =====
+# ===== tijdzone helpers =====
 try:
     from zoneinfo import ZoneInfo  # Python 3.9+
 except Exception:  # pragma: no cover
-    from backports.zoneinfo import ZoneInfo  # fallback voor oudere omgevingen
+    from backports.zoneinfo import ZoneInfo
 
 def now_naive_in_tz(tz_str: str) -> pd.Timestamp:
-    """Echte kloktijd in deze tz, zonder tz-info (naive Pandas Timestamp)."""
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str))).tz_localize(None)
 
 def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
-    """Huidige tijd als tz-aware pandas Timestamp in gewenste tz."""
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
-# Onderdruk macOS LibreSSL waarschuwing
+# Onderdruk macOS LibreSSL warning van urllib3
 warnings.filterwarnings(
     "ignore",
     message=r"urllib3 v2 only supports OpenSSL.*",
@@ -33,7 +31,7 @@ warnings.filterwarnings(
     module=r"urllib3\.__init__"
 )
 
-# Rich text detectie (voor rode annotaties bovenaan)
+# Rich text detectie
 try:
     from openpyxl.cell.rich_text import CellRichText, TextBlock
     from openpyxl.cell.text import InlineFont
@@ -53,11 +51,18 @@ CK_CODES  = ["442"]
 WEEK_LABEL = "short"       # of "iso"
 SAT_ONLY_CK = True         # CommissieKamer alleen zaterdag
 
+# Wedstrijden (programma) instellingen
+PROGRAM_DAYS_AHEAD = 60
+PROGRAM_FIELDS = ("wedstrijddatum,wedstrijdnummer,thuisteamclubrelatiecode,"
+                  "uitteamclubrelatiecode,thuisteam,uitteam,competitiesoort,aanvangstijd")
+CKC_CLUBRELATIECODE = "BBDZ08H"  # alleen deze thuisclub meenemen
+
 DAYS_NL = ["Maandag","Dinsdag","Woensdag","Donderdag","Vrijdag","Zaterdag","Zondag"]
 DAY_COLORS = {
     "Maandag":"FFDDEBF7","Dinsdag":"FFE2EFDA","Woensdag":"FFFFF2CC",
     "Donderdag":"FFFCE4D6","Vrijdag":"FFE7E6E6","Zaterdag":"FFE4DFEC","Zondag":"FFF8CBAD"
 }
+
 # Shifts per dag: (Tijd-van, Tijd-tot)
 DEFAULT_SLOTS: Dict[str, List[Tuple[str, str]]] = {
     "Maandag":   [("18:00","19:00"), ("19:00","20:00")],
@@ -71,7 +76,7 @@ DEFAULT_SLOTS: Dict[str, List[Tuple[str, str]]] = {
     "Zondag":    [("10:00","12:30"), ("12:30","15:00")],
 }
 
-# ====== HARDCODED DROPBOX LINK (wordt automatisch naar dl=1 gezet) ======
+# ====== HARDCODED DROPBOX LINK (auto dl=1) ======
 DROPBOX_INPUT_URL = "https://www.dropbox.com/scl/fi/ukcs87y9h1j27uyzcotig/rooster_input.txt?rlkey=fx0ayzshabo7zikun620m61hh&st=vtrlzr8k&dl=0"
 
 # ---------- Helpers ----------
@@ -96,6 +101,23 @@ def build_urls(taskcodes: List[str],
             url += f"&fields={quote(fields)}"
         urls.append(url)
     return urls
+
+def build_program_url(days: int, client_id: str, fields: str = PROGRAM_FIELDS,
+                      eigenwedstrijden: str = "JA", thuis: str = "JA", uit: str = "NEE",
+                      gebruiklokaleteamgegevens: str = "NEE") -> str:
+    base = "https://data.sportlink.com/programma"
+    url = (
+        f"{base}"
+        f"?aantaldagen={int(days)}"
+        f"&client_id={client_id}"
+        f"&eigenwedstrijden={eigenwedstrijden}"
+        f"&thuis={thuis}"
+        f"&uit={uit}"
+        f"&gebruiklokaleteamgegevens={gebruiklokaleteamgegevens}"
+    )
+    if fields:
+        url += f"&fields={quote(fields)}"
+    return url
 
 def http_get_json(url: str, timeout: int = 30, max_retries: int = 3, backoff_factor: float = 0.8):
     headers = {"User-Agent": "CKC-Rooster/Streamlit", "Accept": "application/json"}
@@ -127,7 +149,6 @@ def _pick(colnames, candidates):
     return None
 
 def normalize_dataframe(data, tz_str: str):
-    """df: Naam, Datum (tz-naive), Dag, Tijd vanaf, Tijd tot, Week, ISO_Year."""
     df_raw = pd.DataFrame(data)
     cols = df_raw.columns.tolist()
 
@@ -154,7 +175,7 @@ def normalize_dataframe(data, tz_str: str):
     })
 
     dat = pd.to_datetime(out["Datum vanaf"], errors="coerce", utc=True)
-    dat = dat.dt.tz_convert(tz_str).dt.tz_localize(None)  # tz-naive
+    dat = dat.dt.tz_convert(tz_str).dt.tz_localize(None)
     out["Datum"] = dat
     out = out.dropna(subset=["Datum"])
 
@@ -170,7 +191,6 @@ def normalize_dataframe(data, tz_str: str):
     return out
 
 def filter_from_current_week(df: pd.DataFrame, tz_str: str) -> pd.DataFrame:
-    """Houd alleen rijen met Datum-dag >= maandag (00:00) van de huidige week (tz-naive)."""
     now_naive = now_naive_in_tz(tz_str)
     monday_naive = (now_naive - pd.Timedelta(days=int(now_naive.weekday()))).normalize()
     return df[df["Datum"].dt.normalize() >= monday_naive].copy()
@@ -209,7 +229,7 @@ def build_matrix(df: pd.DataFrame,
 
     weeks_pairs, week_mondays = derive_weeks(df, tz_str, horizon_weeks_if_empty)
 
-    # Huidige week altijd aanwezig (tz-naive)
+    # Huidige week altijd aanwezig
     now_naive = now_naive_in_tz(tz_str)
     iso_now = now_naive.isocalendar()
     current_pair = (int(iso_now.year), int(iso_now.week))
@@ -245,7 +265,7 @@ def build_matrix(df: pd.DataFrame,
         columns=[week_label(p) for p in weeks_pairs]
     )
 
-    # MultiIndex lexsorten in jouw dagvolgorde
+    # MultiIndex sortering
     mi = matrix.index
     dag = pd.CategoricalIndex([tpl[0] for tpl in mi], categories=DAYS_NL, ordered=True, name="Dag")
     tvan = [tpl[1] for tpl in mi]
@@ -253,12 +273,14 @@ def build_matrix(df: pd.DataFrame,
     matrix.index = pd.MultiIndex.from_arrays([dag, tvan, ttot], names=["Dag","Tijd-van","Tijd-tot"])
     matrix.sort_index(level=[0,1,2], inplace=True)
 
+    # Kolom-headers met datum
     for p in weeks_pairs:
         mon = week_mondays[p]; col = week_label(p)
         for d in days_to_use:
             day_date = (mon + pd.Timedelta(days=DAYS_NL.index(d))).strftime("%d-%b")
             matrix.loc[(d,"",""), col] = f"{d} ({day_date})"
 
+    # Namen invullen
     for _, r in df.iterrows():
         d = r["Dag"]; t_from = r["Tijd vanaf"]; t_to = r["Tijd tot"]
         w = int(r["Week"]); y = int(r["ISO_Year"])
@@ -267,7 +289,8 @@ def build_matrix(df: pd.DataFrame,
             for (van, tot) in slots.get(d, []):
                 if van == t_from:
                     t_to = tot; break
-        col = week_label((y, w))
+        # Let op: bij WEEK_LABEL="short" ontbreekt jaar in label; we bouwen hem toch zo:
+        col = (f"{y}-W{w:02d}" if week_label_style=="iso" else f"Week {w}")
         if (d in slots) and ((t_from, t_to) in slots.get(d, [])) and (col in matrix.columns):
             cur = matrix.loc[(d, t_from, t_to), col]
             name = str(r["Naam"]) if pd.notna(r["Naam"]) else ""
@@ -327,7 +350,7 @@ def format_sheet(ws, matrix, slots: Dict[str, List[Tuple[str,str]]], tz_str: str
                 max_len = max(max_len, len(str(cell.value)))
         ws.column_dimensions[col_cells[0].column_letter].width = min(max(int(max_len*0.75)+2, 10), 24)
 
-    # Timestamp in A1 — echte Amsterdamse kloktijd
+    # Timestamp in A1
     now = now_naive_in_tz(tz_str)
     stamp = f"{now.day} {month_short_nl(now.month)} {now.strftime('%H:%M')}"
     a1 = ws.cell(row=1, column=1); a1.value = stamp
@@ -336,7 +359,70 @@ def format_sheet(ws, matrix, slots: Dict[str, List[Tuple[str,str]]], tz_str: str
 
     ws.freeze_panes = "D2"
 
-def apply_manual_annotations(ws, matrix, annotations, week_label_style: str, slots: Dict[str, List[Tuple[str,str]]]):
+# ===== Wedstrijd-normalisatie & mapping =====
+def _strip_ckc_prefix(name: str) -> str:
+    if not isinstance(name, str):
+        return ""
+    s = name.strip()
+    up = s.upper()
+    if up.startswith("CKC JO") or up.startswith("CKC MO") or up.startswith("CKC O") or up.startswith("CKC VR"):
+        # Verwijder "CKC " (4 chars)
+        return s[4:].lstrip()
+    return s
+
+def normalize_program(data, tz_str: str) -> pd.DataFrame:
+    """Produceert: Datum (tz-naive), Dag, Tijd, ISO_Year, Week, HomeCode, HomeTeam (bewerkt)"""
+    df = pd.DataFrame(data)
+    if df.empty:
+        return df
+
+    c_date = _pick(df.columns, ["wedstrijddatum"])
+    c_time = _pick(df.columns, ["aanvangstijd"])
+    c_home = _pick(df.columns, ["thuisteam"])
+    c_home_code = _pick(df.columns, ["thuisteamclubrelatiecode"])
+
+    # Combineer datum+tijd naar tz-aware in Amsterdam en daarna tz-naive
+    ts = pd.to_datetime(df[c_date] + " " + df[c_time], errors="coerce")
+    ts_aw = ts.dt.tz_localize(ZoneInfo(tz_str), nonexistent='NaT', ambiguous='NaT')
+    df["Datum"] = ts_aw.dt.tz_convert(None)
+    df = df.dropna(subset=["Datum"]).copy()
+
+    # Filter: alleen thuiswedstrijden van onze club
+    df = df[df[c_home_code].astype(str) == CKC_CLUBRELATIECODE].copy()
+
+    df["Dag"] = df["Datum"].dt.weekday.map(lambda i: DAYS_NL[i])
+    df["Tijd"] = df["Datum"].dt.strftime("%H:%M")
+    iso = df["Datum"].dt.isocalendar()
+    df["ISO_Year"] = iso.year.astype(int)
+    df["Week"] = iso.week.astype(int)
+
+    # Alleen slot-starttijden
+    ok_rows = []
+    for _, r in df.iterrows():
+        starts = [a for a, b in DEFAULT_SLOTS.get(r["Dag"], [])]
+        ok_rows.append(r["Tijd"] in starts)
+    df = df.loc[ok_rows].copy()
+
+    # Teamnaam bewerken (alleen thuisteam, CKC-voorvoegsel soms weg)
+    df["HomeTeam"] = df[c_home].astype(str).map(_strip_ckc_prefix)
+
+    return df[["Datum","Dag","Tijd","ISO_Year","Week","HomeTeam"]]
+
+def build_match_map(df_program: pd.DataFrame) -> Dict[tuple, list]:
+    """key=(ISO_Year, Week, Dag, Tijd) -> [ 'JO15-1', ... ]  (alleen CKC teams, al gefilterd)"""
+    match_map = {}
+    for _, r in df_program.iterrows():
+        key = (int(r["ISO_Year"]), int(r["Week"]), r["Dag"], r["Tijd"])
+        s = r["HomeTeam"].strip()
+        if not s:
+            continue
+        match_map.setdefault(key, []).append(s)
+    return match_map
+
+# ===== Annotaties + wedstrijden toepassen =====
+def apply_manual_annotations(ws, matrix, annotations, week_label_style: str,
+                             slots: Dict[str, List[Tuple[str,str]]],
+                             match_map: Optional[Dict[tuple, list]] = None):
     cols = list(matrix.columns)
     col_index_by_label = {label: idx for idx, label in enumerate(cols, start=4)}  # D = eerste weekkolom
 
@@ -346,60 +432,90 @@ def apply_manual_annotations(ws, matrix, annotations, week_label_style: str, slo
     for (d, van, tot) in matrix.index:
         row_index_by_key[(d, van, tot)] = row_idx; row_idx += 1
 
+    # Handmatige annotaties groeperen per cel
+    anno_map: Dict[tuple, list] = {}
     for a in annotations:
         label = week_label(a["iso_year"], a["iso_week"])
-        col_idx = col_index_by_label.get(label)
         # 'tot' afleiden uit slots
         tot = None
         for (v, t) in slots.get(a["day"], []):
             if v == a["time_from"]:
                 tot = t; break
-        if col_idx is None or tot is None:
+        if tot is None:
             continue
-        row_idx = row_index_by_key.get((a["day"], a["time_from"], tot))
-        if row_idx is None:
-            continue
+        key_row = (a["day"], a["time_from"], tot)
+        key_col = label
+        anno_map.setdefault((key_row, key_col), []).append(a["text"].strip())
 
-        cell = ws.cell(row=row_idx, column=col_idx)
-        cur = str(cell.value) if cell.value is not None else ""
-        anno_text = a["text"].strip()
+    # Render per cel
+    for (d, van, tot) in matrix.index:
+        if not van and not tot:
+            continue  # header
+        for label in cols:
+            col_idx = col_index_by_label[label]
+            row_idx = row_index_by_key[(d, van, tot)]
+            cell = ws.cell(row=row_idx, column=col_idx)
+            cur = str(cell.value) if cell.value is not None else ""
 
-        used_richtext = False
-        if _HAS_RICHTEXT:
-            try:
-                rt = CellRichText()
-                # Handmatige input: rood
-                rt.append(TextBlock(InlineFont(color="FF0000"), anno_text + "\n"))
-                if cur.strip():
-                    # Divider én bestaande namen: expliciet zwart
-                    rt.append(TextBlock(InlineFont(color="FF000000"), "---\n"))
-                    rt.append(TextBlock(InlineFont(color="FF000000"), cur))
-                cell.value = rt
-                cell.alignment = Alignment(wrap_text=True, vertical="top")
-                used_richtext = True
-            except Exception:
-                used_richtext = False
-
-        if not used_richtext:
-            if cur.strip():
-                cell.value = f"{anno_text}\n---\n{cur}"
+            # Week/jaar uit label
+            if week_label_style == "iso":
+                parts = label.split("-W")
+                y, w = int(parts[0]), int(parts[1])
             else:
-                cell.value = anno_text
-            # Fallback: alles rood; (Excel toont dan alles rood, maar tenminste zichtbaar)
-            cell.font = Font(color="FF0000")
-            cell.alignment = Alignment(wrap_text=True, vertical="top")
+                # 'Week ww' -> jaar benaderen als huidig jaar (horizon ~60 dagen)
+                try:
+                    w = int(label.split()[1])
+                except Exception:
+                    continue
+                y = now_naive_in_tz(TZ).isocalendar().year
 
+            annos = anno_map.get(((d, van, tot), label), [])
+            mm_list = []
+            if match_map:
+                mm_list = match_map.get((y, w, d, van), [])
+
+            if not annos and not mm_list:
+                continue
+
+            used_richtext = False
+            if _HAS_RICHTEXT:
+                try:
+                    rt = CellRichText()
+                    # 1) Handmatige input (rood)
+                    for atext in annos:
+                        rt.append(TextBlock(InlineFont(color="FFCC0000"), atext + "\n"))
+                    # 2) Wedstrijden (blauw) – alleen CKC teamnaam
+                    for m in mm_list:
+                        rt.append(TextBlock(InlineFont(color="FF1F4E79"), m + "\n"))
+                    # 3) Divider + bestaande namen (zwart)
+                    if cur.strip():
+                        rt.append(TextBlock(InlineFont(color="FF000000"), "---\n"))
+                        rt.append(TextBlock(InlineFont(color="FF000000"), cur))
+                    cell.value = rt
+                    cell.alignment = Alignment(wrap_text=True, vertical="top")
+                    used_richtext = True
+                except Exception:
+                    used_richtext = False
+
+            if not used_richtext:
+                lines = []
+                lines.extend(annos)   # (fallback: wordt rood)
+                lines.extend(mm_list) # (fallback: wordt ook rood)
+                if cur.strip():
+                    lines.append("---")
+                    lines.append(cur)
+                cell.value = "\n".join(lines)
+                cell.font = Font(color="FF0000")
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+# ===== Handmatige input (.txt) =====
 def parse_manual_text(text: str):
-    """Verwerk regels 'YYYY-MM-DD HH:MM tekst' naar annotaties.
-       Neem ALLES mee vanaf maandag 00:00 van de huidige week (Europe/Amsterdam).
-       Regels vóór de lopende week worden genegeerd.
-    """
+    """Neem ALLES mee vanaf maandag 00:00 van de huidige week (Europe/Amsterdam)."""
     entries = []
     if not text:
         return entries
 
-    # Maandag 00:00 van de huidige week (tz-aware, Amsterdam)
-    now_aw = now_aware_in_tz(TZ)  # pandas.Timestamp, tz-aware
+    now_aw = now_aware_in_tz(TZ)
     monday_aw = (now_aw - pd.Timedelta(days=int(now_aw.weekday()))).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
@@ -408,7 +524,6 @@ def parse_manual_text(text: str):
         s = line.strip()
         if not s or s.startswith("#"):
             continue
-
         parts = s.split()
         if len(parts) < 3:
             continue
@@ -416,44 +531,38 @@ def parse_manual_text(text: str):
         date_str, time_str = parts[0], parts[1]
         txt = " ".join(parts[2:]).strip()
 
-        # Parse naar tz-aware in Amsterdam
         try:
             dt_aw = pd.Timestamp(f"{date_str} {time_str}", tz=ZoneInfo(TZ))
         except Exception:
             continue
 
-        # Filter: alleen vanaf de lopende week (>= maandag 00:00)
         if dt_aw < monday_aw:
             continue
 
         day_name = DAYS_NL[int(dt_aw.weekday())]
-
-        # Tijd moet exact op een 'start' van een slot liggen
         starts = [a for a, b in DEFAULT_SLOTS.get(day_name, [])]
         if time_str not in starts:
             continue
 
         iso = dt_aw.isocalendar()
         entries.append({
-            "date": dt_aw.tz_convert(None),  # tz-naive voor Excel
+            "date": dt_aw.tz_convert(None),
             "time_from": time_str,
             "text": txt,
             "iso_year": int(iso.year),
             "iso_week": int(iso.week),
             "day": day_name,
         })
-
     return entries
 
 # -------- Dropbox helper --------
 def _ensure_dropbox_direct(url: str) -> str:
-    """Zet een standaard Dropbox-deellink om naar direct-download (dl=1)."""
     if not url or "dropbox.com" not in url:
         return url
     try:
         pr = urlparse(url)
         qs = parse_qs(pr.query)
-        qs["dl"] = ["1"]  # forceer download
+        qs["dl"] = ["1"]
         new_query = urlencode({k: v[0] for k, v in qs.items()})
         return urlunparse((pr.scheme, pr.netloc, pr.path, pr.params, new_query, pr.fragment))
     except Exception:
@@ -463,9 +572,10 @@ def read_manual_text_from_dropbox(timeout: int = 30) -> str:
     direct = _ensure_dropbox_direct(DROPBOX_INPUT_URL)
     r = requests.get(direct, timeout=timeout)
     r.raise_for_status()
-    return r.text  # verwacht platte tekst
+    return r.text
 
-def make_excel(df_bar, df_ck, annotations):
+# ===== Excel bouwen =====
+def make_excel(df_bar, df_ck, annotations, match_map=None):
     extra_weeks_pairs = sorted({(a["iso_year"], a["iso_week"]) for a in annotations})
     matrix_bar = build_matrix(df_bar, slots=DEFAULT_SLOTS, tz_str=TZ,
                               days_subset=None, horizon_weeks_if_empty=4,
@@ -480,12 +590,16 @@ def make_excel(df_bar, df_ck, annotations):
         matrix_bar.to_excel(writer, sheet_name="BarRooster")
         ws_bar = writer.sheets["BarRooster"]
         format_sheet(ws_bar, matrix_bar, DEFAULT_SLOTS, TZ)
-        apply_manual_annotations(ws_bar, matrix_bar, annotations, week_label_style=WEEK_LABEL, slots=DEFAULT_SLOTS)
+        apply_manual_annotations(ws_bar, matrix_bar, annotations,
+                                 week_label_style=WEEK_LABEL, slots=DEFAULT_SLOTS,
+                                 match_map=match_map)
 
         matrix_ck.to_excel(writer, sheet_name="CommissieKamer")
         ws_ck = writer.sheets["CommissieKamer"]
         format_sheet(ws_ck, matrix_ck, DEFAULT_SLOTS, TZ)
-        apply_manual_annotations(ws_ck, matrix_ck, annotations, week_label_style=WEEK_LABEL, slots=DEFAULT_SLOTS)
+        apply_manual_annotations(ws_ck, matrix_ck, annotations,
+                                 week_label_style=WEEK_LABEL, slots=DEFAULT_SLOTS,
+                                 match_map=match_map)
 
     bio.seek(0)
     return bio
@@ -502,22 +616,33 @@ use_dropbox = st.checkbox("Handmatige input via Dropbox meenemen")
 if st.button("Genereer rooster", use_container_width=True):
     try:
         with st.spinner("Ophalen en bouwen…"):
+            # Vrijwilligersdata
             urls_bar = build_urls(BAR_CODES, DAYS_AHEAD, DEFAULT_CLIENT_ID, weekoffset=WEEK_OFFSET, fields=FIELDS)
             urls_ck  = build_urls(CK_CODES,  DAYS_AHEAD, DEFAULT_CLIENT_ID, weekoffset=WEEK_OFFSET, fields=FIELDS)
 
             all_bar = sum([http_get_json(u) for u in urls_bar], [])
             all_ck  = sum([http_get_json(u) for u in urls_ck],  [])
 
-            # Normalize + FILTER vanaf maandag van deze week (tz-naive)
             df_bar = filter_from_current_week(normalize_dataframe(all_bar, TZ), TZ)
             df_ck  = filter_from_current_week(normalize_dataframe(all_ck,  TZ), TZ)
 
+            # Wedstrijden (alleen thuis, alleen CKC clubrelatiecode)
+            program_url = build_program_url(PROGRAM_DAYS_AHEAD, DEFAULT_CLIENT_ID, PROGRAM_FIELDS,
+                                            eigenwedstrijden="JA", thuis="JA", uit="NEE",
+                                            gebruiklokaleteamgegevens="NEE")
+            program_json = http_get_json(program_url)
+            df_program = normalize_program(program_json, TZ)
+            df_program = filter_from_current_week(df_program.rename(columns={"Datum":"Datum"}), TZ)
+            match_map = build_match_map(df_program)
+
+            # Handmatige input
             manual_text = ""
             if use_dropbox:
                 manual_text = read_manual_text_from_dropbox()
-
             annotations = parse_manual_text(manual_text)
-            xlsx = make_excel(df_bar, df_ck, annotations)
+
+            # Excel
+            xlsx = make_excel(df_bar, df_ck, annotations, match_map=match_map)
 
         st.success("Klaar! Download hieronder het Excel-bestand.")
         st.download_button(
@@ -529,6 +654,6 @@ if st.button("Genereer rooster", use_container_width=True):
         )
 
     except requests.HTTPError as e:
-        st.error(f"Fout bij ophalen Dropbox-bestand: {e}")
+        st.error(f"Fout bij ophalen gegevens: {e}")
     except Exception as e:
         st.error(f"Er ging iets mis: {e}")
