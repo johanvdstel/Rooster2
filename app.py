@@ -373,7 +373,7 @@ def format_sheet(ws, matrix, slots: Dict[str, List[Tuple[str,str]]], tz_str: str
 
     ws.freeze_panes = "D2"
 
-# ===== Wedstrijd-normalisatie & mapping =====
+# ===== Wedstrijd-normalisatie =====
 def _strip_ckc_prefix(name: str) -> str:
     if not isinstance(name, str):
         return ""
@@ -387,9 +387,8 @@ def normalize_program(data, tz_str: str) -> pd.DataFrame:
     """Zet Sportlink 'programma' om naar kolommen:
        Datum (tz-naive, in Amsterdam), Dag, Tijd(HH:MM), ISO_Year, Week, HomeTeam.
        - Alleen thuiswedstrijden van CKC_CLUBRELATIECODE
-       - Alleen tijden die exact op slot-start liggen
        - HomeTeam: CKC-voorvoegsel soms verwijderd
-       - Robuuste parsing: gebruik uitsluitend 'wedstrijddatum' (bevat al tijd + offset)
+       - Parsing: gebruik uitsluitend 'wedstrijddatum' (bevat al tijd + offset)
     """
     df = pd.DataFrame(data)
     empty = pd.DataFrame(columns=["Datum","Dag","Tijd","ISO_Year","Week","HomeTeam"])
@@ -400,60 +399,62 @@ def normalize_program(data, tz_str: str) -> pd.DataFrame:
     c_home = _pick(df.columns, ["thuisteam"])
     c_home_code = _pick(df.columns, ["thuisteamclubrelatiecode"])
 
-    # Vereiste velden check
     for col in (c_date, c_home, c_home_code):
         if col is None or col not in df.columns:
             return empty
 
-    # 1) Parse uitsluitend 'wedstrijddatum' (bijv. '2025-10-04T08:30:00+0200')
+    # Parse ISO met offset -> UTC -> Amsterdam -> tz-naive
     dt = pd.to_datetime(df[c_date].astype(str).str.strip(), errors="coerce", utc=True)
     mask_ok = dt.notna()
     if not mask_ok.any():
         return empty
-
-    # 2) Naar Europe/Amsterdam en tz-naive
     dt_local_naive = dt.dt.tz_convert(ZoneInfo(tz_str)).dt.tz_localize(None)
 
     df = df.loc[mask_ok].copy()
     df["Datum"] = dt_local_naive.astype("datetime64[ns]")
 
-    # 3) Alleen thuiswedstrijden van onze club
+    # Alleen thuiswedstrijden van onze club
     df = df[df[c_home_code].astype(str) == CKC_CLUBRELATIECODE].copy()
     if df.empty:
         return empty
 
-    # 4) Afgeleide velden
+    # Afgeleide velden
     df["Dag"] = df["Datum"].dt.weekday.map(lambda i: DAYS_NL[i])
     df["Tijd"] = df["Datum"].dt.strftime("%H:%M")
     iso = df["Datum"].dt.isocalendar()
     df["ISO_Year"] = iso.year.astype(int)
     df["Week"] = iso.week.astype(int)
 
-    # 5) Alleen slot-starttijden
-    df = df[df.apply(lambda r: r["Tijd"] in [a for a, b in DEFAULT_SLOTS.get(r["Dag"], [])], axis=1)].copy()
-    if df.empty:
-        return empty
-
-    # 6) Alleen CKC teamnaam, prefix 'CKC ' verwijderen bij JO/MO/O/VR
+    # Alleen CKC teamnaam, prefix 'CKC ' soms weg
     df["HomeTeam"] = df[c_home].astype(str).map(_strip_ckc_prefix)
 
     return df[["Datum","Dag","Tijd","ISO_Year","Week","HomeTeam"]]
 
-def build_match_map(df_program: pd.DataFrame) -> Dict[tuple, list]:
-    """key=(ISO_Year, Week, Dag, Tijd) -> [ 'JO15-1', ... ]"""
-    match_map = {}
-    for _, r in df_program.iterrows():
-        key = (int(r["ISO_Year"]), int(r["Week"]), r["Dag"], r["Tijd"])
-        s = r["HomeTeam"].strip()
-        if not s:
-            continue
-        match_map.setdefault(key, []).append(s)
-    return match_map
+# ===== Wedstrijd-index voor snelle overlap lookup =====
+def _hhmm_to_minutes(hhmm: str) -> int:
+    try:
+        h, m = hhmm.split(":")
+        return int(h) * 60 + int(m)
+    except Exception:
+        return -1
 
-# ===== Annotaties + wedstrijden toepassen =====
+def build_match_index_for_overlap(df_program: pd.DataFrame) -> Dict[tuple, List[Tuple[int, str]]]:
+    """key=(ISO_Year, Week, Dag) -> list of (start_minutes, team).
+       We gebruiken alleen starttijd; overlap-criterium: slot_from <= start < slot_to.
+    """
+    idx: Dict[tuple, List[Tuple[int, str]]] = {}
+    for _, r in df_program.iterrows():
+        y, w, d = int(r["ISO_Year"]), int(r["Week"]), r["Dag"]
+        tmin = _hhmm_to_minutes(str(r["Tijd"]))
+        team = str(r["HomeTeam"]).strip()
+        if tmin >= 0 and team:
+            idx.setdefault((y, w, d), []).append((tmin, team))
+    return idx
+
+# ===== Annotaties + (optioneel) wedstrijden toepassen =====
 def apply_manual_annotations(ws, matrix, annotations, week_label_style: str,
                              slots: Dict[str, List[Tuple[str,str]]],
-                             match_map: Optional[Dict[tuple, list]] = None):
+                             match_index: Optional[Dict[tuple, List[Tuple[int, str]]]] = None):
     cols = list(matrix.columns)
     col_index_by_label = {label: idx for idx, label in enumerate(cols, start=4)}  # D = eerste weekkolom
 
@@ -482,6 +483,9 @@ def apply_manual_annotations(ws, matrix, annotations, week_label_style: str,
     for (d, van, tot) in matrix.index:
         if not van and not tot:
             continue  # header
+        v_from = _hhmm_to_minutes(van) if van else -1
+        v_to   = _hhmm_to_minutes(tot) if tot else -1
+
         for label in cols:
             col_idx = col_index_by_label[label]
             row_idx = row_index_by_key[(d, van, tot)]
@@ -500,11 +504,18 @@ def apply_manual_annotations(ws, matrix, annotations, week_label_style: str,
                 y = now_naive_in_tz(TZ).isocalendar().year
 
             annos = anno_map.get(((d, van, tot), label), [])
-            mm_list = []
-            if match_map:
-                mm_list = match_map.get((y, w, d, van), [])
 
-            if not annos and not mm_list:
+            # Wedstrijden binnen slot (overlap via starttijd in [van, tot))
+            mm_joined = ""
+            if match_index is not None and v_from >= 0 and v_to > v_from:
+                for tmin, team in match_index.get((y, w, d), []):
+                    if v_from <= tmin < v_to:
+                        if not mm_joined:
+                            mm_joined = team
+                        else:
+                            mm_joined = f"{mm_joined}, {team}"
+
+            if not annos and not mm_joined:
                 continue
 
             used_richtext = False
@@ -514,9 +525,9 @@ def apply_manual_annotations(ws, matrix, annotations, week_label_style: str,
                     # 1) Handmatige input (rood)
                     for atext in annos:
                         rt.append(TextBlock(InlineFont(color="FFCC0000"), atext + "\n"))
-                    # 2) Wedstrijden (blauw)
-                    for m in mm_list:
-                        rt.append(TextBlock(InlineFont(color="FF1F4E79"), m + "\n"))
+                    # 2) Wedstrijden (blauw) – teams gejoined met komma’s
+                    if mm_joined:
+                        rt.append(TextBlock(InlineFont(color="FF1F4E79"), mm_joined + "\n"))
                     # 3) Divider + bestaande namen (zwart)
                     if cur.strip():
                         rt.append(TextBlock(InlineFont(color="FF000000"), "---\n"))
@@ -530,7 +541,8 @@ def apply_manual_annotations(ws, matrix, annotations, week_label_style: str,
             if not used_richtext:
                 lines = []
                 lines.extend(annos)   # (fallback: wordt rood)
-                lines.extend(mm_list) # (fallback: wordt ook rood)
+                if mm_joined:
+                    lines.append(mm_joined)  # (fallback ook rood)
                 if cur.strip():
                     lines.append("---")
                     lines.append(cur)
@@ -605,7 +617,7 @@ def read_manual_text_from_dropbox(timeout: int = 30) -> str:
     return r.text
 
 # ===== Excel bouwen =====
-def make_excel(df_bar, df_ck, annotations, match_map=None):
+def make_excel(df_bar, df_ck, annotations, match_index=None):
     extra_weeks_pairs = sorted({(a["iso_year"], a["iso_week"]) for a in annotations})
     matrix_bar = build_matrix(df_bar, slots=DEFAULT_SLOTS, tz_str=TZ,
                               days_subset=None, horizon_weeks_if_empty=4,
@@ -622,14 +634,14 @@ def make_excel(df_bar, df_ck, annotations, match_map=None):
         format_sheet(ws_bar, matrix_bar, DEFAULT_SLOTS, TZ)
         apply_manual_annotations(ws_bar, matrix_bar, annotations,
                                  week_label_style=WEEK_LABEL, slots=DEFAULT_SLOTS,
-                                 match_map=match_map)
+                                 match_index=match_index)
 
         matrix_ck.to_excel(writer, sheet_name="CommissieKamer")
         ws_ck = writer.sheets["CommissieKamer"]
         format_sheet(ws_ck, matrix_ck, DEFAULT_SLOTS, TZ)
         apply_manual_annotations(ws_ck, matrix_ck, annotations,
                                  week_label_style=WEEK_LABEL, slots=DEFAULT_SLOTS,
-                                 match_map=match_map)
+                                 match_index=match_index)
 
     bio.seek(0)
     return bio
@@ -639,10 +651,11 @@ def make_excel(df_bar, df_ck, annotations, match_map=None):
 # =========================
 st.set_page_config(page_title="CKC Rooster generator", page_icon="🗓️", layout="centered")
 st.markdown("<h1 style='text-align:center;margin-bottom:0'>CKC Rooster generator</h1>", unsafe_allow_html=True)
-st.markdown("<h5 style='text-align:center;margin-top:0.25rem;color:#666'>versie 2.0</h5>", unsafe_allow_html=True)
+st.markdown("<h5 style='text-align:center;margin-top:0.25rem;color:#666'>versie 2.1</h5>", unsafe_allow_html=True)
 st.caption("Sportlink → Excel · vaste instellingen (Europe/Amsterdam), weekoffset=-1, gefilterd vanaf huidige week")
 
 use_dropbox = st.checkbox("Handmatige input via Dropbox meenemen")
+use_matches = st.checkbox("Wedstrijdinfo toevoegen", value=True)
 
 if st.button("Genereer rooster", use_container_width=True):
     try:
@@ -658,13 +671,15 @@ if st.button("Genereer rooster", use_container_width=True):
             df_ck  = filter_from_current_week(normalize_dataframe(all_ck,  TZ), TZ)
 
             # Wedstrijden (alleen thuis, alleen CKC clubrelatiecode)
-            program_url = build_program_url(PROGRAM_DAYS_AHEAD, DEFAULT_CLIENT_ID, PROGRAM_FIELDS,
-                                            eigenwedstrijden="JA", thuis="JA", uit="NEE",
-                                            gebruiklokaleteamgegevens="NEE")
-            program_json = http_get_json(program_url)
-            df_program = normalize_program(program_json, TZ)
-            df_program = filter_from_current_week(df_program, TZ)
-            match_map = build_match_map(df_program)
+            match_index = None
+            if use_matches:
+                program_url = build_program_url(PROGRAM_DAYS_AHEAD, DEFAULT_CLIENT_ID, PROGRAM_FIELDS,
+                                                eigenwedstrijden="JA", thuis="JA", uit="NEE",
+                                                gebruiklokaleteamgegevens="NEE")
+                program_json = http_get_json(program_url)
+                df_program = normalize_program(program_json, TZ)
+                df_program = filter_from_current_week(df_program, TZ)
+                match_index = build_match_index_for_overlap(df_program)
 
             # Handmatige input
             manual_text = ""
@@ -673,7 +688,7 @@ if st.button("Genereer rooster", use_container_width=True):
             annotations = parse_manual_text(manual_text)
 
             # Excel
-            xlsx = make_excel(df_bar, df_ck, annotations, match_map=match_map)
+            xlsx = make_excel(df_bar, df_ck, annotations, match_index=match_index)
 
         st.success("Klaar! Download hieronder het Excel-bestand.")
         st.download_button(
