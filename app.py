@@ -384,56 +384,57 @@ def _strip_ckc_prefix(name: str) -> str:
     return s
 
 def normalize_program(data, tz_str: str) -> pd.DataFrame:
-    """Datum (tz-naive), Dag, Tijd, ISO_Year, Week, HomeTeam
-       - Alleen thuiswedstrijden CKC_CLUBRELATIECODE
+    """Zet Sportlink 'programma' om naar kolommen:
+       Datum (tz-naive, in Amsterdam), Dag, Tijd(HH:MM), ISO_Year, Week, HomeTeam.
+       - Alleen thuiswedstrijden van CKC_CLUBRELATIECODE
        - Alleen tijden die exact op slot-start liggen
        - HomeTeam: CKC-voorvoegsel soms verwijderd
-       - Robuuste datetime parsing (voorkomt .dt-fouten)
+       - Robuuste parsing: gebruik uitsluitend 'wedstrijddatum' (bevat al tijd + offset)
     """
     df = pd.DataFrame(data)
+    empty = pd.DataFrame(columns=["Datum","Dag","Tijd","ISO_Year","Week","HomeTeam"])
     if df.empty:
-        return pd.DataFrame(columns=["Datum","Dag","Tijd","ISO_Year","Week","HomeTeam"])
+        return empty
 
     c_date = _pick(df.columns, ["wedstrijddatum"])
-    c_time = _pick(df.columns, ["aanvangstijd"])
     c_home = _pick(df.columns, ["thuisteam"])
     c_home_code = _pick(df.columns, ["thuisteamclubrelatiecode"])
 
-    for col in (c_date, c_time, c_home, c_home_code):
+    # Vereiste velden check
+    for col in (c_date, c_home, c_home_code):
         if col is None or col not in df.columns:
-            return pd.DataFrame(columns=["Datum","Dag","Tijd","ISO_Year","Week","HomeTeam"])
+            return empty
 
-    # Combineer datum + tijd, forceer strings, parse naar datetime
-    combo = (df[c_date].astype(str).str.strip() + " " + df[c_time].astype(str).str.strip())
-    ts = pd.to_datetime(combo, errors="coerce", utc=False)  # lokale datum/tijd
-    mask_ok = ts.notna()
+    # 1) Parse uitsluitend 'wedstrijddatum' (bijv. '2025-10-04T08:30:00+0200')
+    dt = pd.to_datetime(df[c_date].astype(str).str.strip(), errors="coerce", utc=True)
+    mask_ok = dt.notna()
     if not mask_ok.any():
-        return pd.DataFrame(columns=["Datum","Dag","Tijd","ISO_Year","Week","HomeTeam"])
+        return empty
+
+    # 2) Naar Europe/Amsterdam en tz-naive
+    dt_local_naive = dt.dt.tz_convert(ZoneInfo(tz_str)).dt.tz_localize(None)
+
     df = df.loc[mask_ok].copy()
-    ts = ts.loc[mask_ok]
+    df["Datum"] = dt_local_naive.astype("datetime64[ns]")
 
-    # Maak aware in gewenste TZ en daarna tz-naive
-    ts_aw = ts.dt.tz_localize(ZoneInfo(tz_str), nonexistent="NaT", ambiguous="NaT")
-    df["Datum"] = ts_aw.dt.tz_convert(None)  # datetime64[ns] (tz-naive)
-
-    # Filter: alleen thuiswedstrijden van onze club
+    # 3) Alleen thuiswedstrijden van onze club
     df = df[df[c_home_code].astype(str) == CKC_CLUBRELATIECODE].copy()
     if df.empty:
-        return pd.DataFrame(columns=["Datum","Dag","Tijd","ISO_Year","Week","HomeTeam"])
+        return empty
 
-    # Afgeleide velden
+    # 4) Afgeleide velden
     df["Dag"] = df["Datum"].dt.weekday.map(lambda i: DAYS_NL[i])
     df["Tijd"] = df["Datum"].dt.strftime("%H:%M")
     iso = df["Datum"].dt.isocalendar()
     df["ISO_Year"] = iso.year.astype(int)
     df["Week"] = iso.week.astype(int)
 
-    # Alleen slot-starttijden
+    # 5) Alleen slot-starttijden
     df = df[df.apply(lambda r: r["Tijd"] in [a for a, b in DEFAULT_SLOTS.get(r["Dag"], [])], axis=1)].copy()
     if df.empty:
-        return pd.DataFrame(columns=["Datum","Dag","Tijd","ISO_Year","Week","HomeTeam"])
+        return empty
 
-    # Teamnaam opschonen (alleen thuisteam)
+    # 6) Alleen CKC teamnaam, prefix 'CKC ' verwijderen bij JO/MO/O/VR
     df["HomeTeam"] = df[c_home].astype(str).map(_strip_ckc_prefix)
 
     return df[["Datum","Dag","Tijd","ISO_Year","Week","HomeTeam"]]
@@ -637,7 +638,8 @@ def make_excel(df_bar, df_ck, annotations, match_map=None):
 # UI (simpel & mobiel)
 # =========================
 st.set_page_config(page_title="CKC Rooster generator", page_icon="🗓️", layout="centered")
-st.markdown("<h1 style='text-align:center;margin-bottom:0'>🗓️ CKC Rooster generator</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align:center;margin-bottom:0'>CKC Rooster generator</h1>", unsafe_allow_html=True)
+st.markdown("<h5 style='text-align:center;margin-top:0.25rem;color:#666'>versie 2.0</h5>", unsafe_allow_html=True)
 st.caption("Sportlink → Excel · vaste instellingen (Europe/Amsterdam), weekoffset=-1, gefilterd vanaf huidige week")
 
 use_dropbox = st.checkbox("Handmatige input via Dropbox meenemen")
