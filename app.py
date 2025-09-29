@@ -636,7 +636,7 @@ def make_excel(df_bar, df_ck, annotations, match_map=None):
 # =========================
 # UI (simpel & mobiel)
 # =========================
-st.set_page_config(page_title="Rooster generator", page_icon="🗓️", layout="centered")
+st.set_page_config(page_title="CKC Rooster generator", page_icon="🗓️", layout="centered")
 st.markdown("<h1 style='text-align:center;margin-bottom:0'>🗓️ Rooster generator</h1>", unsafe_allow_html=True)
 st.caption("Sportlink → Excel · vaste instellingen (Europe/Amsterdam), weekoffset=-1, gefilterd vanaf huidige week")
 
