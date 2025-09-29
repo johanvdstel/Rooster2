@@ -55,7 +55,7 @@ SAT_ONLY_CK = True         # CommissieKamer alleen zaterdag
 PROGRAM_DAYS_AHEAD = 60
 PROGRAM_FIELDS = ("wedstrijddatum,wedstrijdnummer,thuisteamclubrelatiecode,"
                   "uitteamclubrelatiecode,thuisteam,uitteam,competitiesoort,aanvangstijd")
-CKC_CLUBRELATIECODE = "BBDZ08H"  # alleen deze thuisclub meenemen
+CKC_CLUBRELATIECODE = "BBDZ08H"  # alleen deze thuisclub meenemen (CKC)
 
 DAYS_NL = ["Maandag","Dinsdag","Woensdag","Donderdag","Vrijdag","Zaterdag","Zondag"]
 DAY_COLORS = {
@@ -191,6 +191,21 @@ def normalize_dataframe(data, tz_str: str):
     return out
 
 def filter_from_current_week(df: pd.DataFrame, tz_str: str) -> pd.DataFrame:
+    """Houd alleen rijen met Datum-dag >= maandag 00:00 van de huidige week.
+       Forceer Datum naar datetime indien nodig.
+    """
+    if "Datum" not in df.columns:
+        return df.iloc[0:0].copy()
+
+    # Forceer naar datetime als het per ongeluk object/str is
+    if not pd.api.types.is_datetime64_any_dtype(df["Datum"]):
+        df = df.copy()
+        df["Datum"] = pd.to_datetime(df["Datum"], errors="coerce")
+
+    df = df.dropna(subset=["Datum"]).copy()
+    if df.empty:
+        return df
+
     now_naive = now_naive_in_tz(tz_str)
     monday_naive = (now_naive - pd.Timedelta(days=int(now_naive.weekday()))).normalize()
     return df[df["Datum"].dt.normalize() >= monday_naive].copy()
@@ -289,7 +304,6 @@ def build_matrix(df: pd.DataFrame,
             for (van, tot) in slots.get(d, []):
                 if van == t_from:
                     t_to = tot; break
-        # Let op: bij WEEK_LABEL="short" ontbreekt jaar in label; we bouwen hem toch zo:
         col = (f"{y}-W{w:02d}" if week_label_style=="iso" else f"Week {w}")
         if (d in slots) and ((t_from, t_to) in slots.get(d, [])) and (col in matrix.columns):
             cur = matrix.loc[(d, t_from, t_to), col]
@@ -366,30 +380,48 @@ def _strip_ckc_prefix(name: str) -> str:
     s = name.strip()
     up = s.upper()
     if up.startswith("CKC JO") or up.startswith("CKC MO") or up.startswith("CKC O") or up.startswith("CKC VR"):
-        # Verwijder "CKC " (4 chars)
-        return s[4:].lstrip()
+        return s[4:].lstrip()  # verwijder "CKC "
     return s
 
 def normalize_program(data, tz_str: str) -> pd.DataFrame:
-    """Produceert: Datum (tz-naive), Dag, Tijd, ISO_Year, Week, HomeCode, HomeTeam (bewerkt)"""
+    """Datum (tz-naive), Dag, Tijd, ISO_Year, Week, HomeTeam
+       - Alleen thuiswedstrijden CKC_CLUBRELATIECODE
+       - Alleen tijden die exact op slot-start liggen
+       - HomeTeam: CKC-voorvoegsel soms verwijderd
+       - Robuuste datetime parsing (voorkomt .dt-fouten)
+    """
     df = pd.DataFrame(data)
     if df.empty:
-        return df
+        return pd.DataFrame(columns=["Datum","Dag","Tijd","ISO_Year","Week","HomeTeam"])
 
     c_date = _pick(df.columns, ["wedstrijddatum"])
     c_time = _pick(df.columns, ["aanvangstijd"])
     c_home = _pick(df.columns, ["thuisteam"])
     c_home_code = _pick(df.columns, ["thuisteamclubrelatiecode"])
 
-    # Combineer datum+tijd naar tz-aware in Amsterdam en daarna tz-naive
-    ts = pd.to_datetime(df[c_date] + " " + df[c_time], errors="coerce")
-    ts_aw = ts.dt.tz_localize(ZoneInfo(tz_str), nonexistent='NaT', ambiguous='NaT')
-    df["Datum"] = ts_aw.dt.tz_convert(None)
-    df = df.dropna(subset=["Datum"]).copy()
+    for col in (c_date, c_time, c_home, c_home_code):
+        if col is None or col not in df.columns:
+            return pd.DataFrame(columns=["Datum","Dag","Tijd","ISO_Year","Week","HomeTeam"])
+
+    # Combineer datum + tijd, forceer strings, parse naar datetime
+    combo = (df[c_date].astype(str).str.strip() + " " + df[c_time].astype(str).str.strip())
+    ts = pd.to_datetime(combo, errors="coerce", utc=False)  # lokale datum/tijd
+    mask_ok = ts.notna()
+    if not mask_ok.any():
+        return pd.DataFrame(columns=["Datum","Dag","Tijd","ISO_Year","Week","HomeTeam"])
+    df = df.loc[mask_ok].copy()
+    ts = ts.loc[mask_ok]
+
+    # Maak aware in gewenste TZ en daarna tz-naive
+    ts_aw = ts.dt.tz_localize(ZoneInfo(tz_str), nonexistent="NaT", ambiguous="NaT")
+    df["Datum"] = ts_aw.dt.tz_convert(None)  # datetime64[ns] (tz-naive)
 
     # Filter: alleen thuiswedstrijden van onze club
     df = df[df[c_home_code].astype(str) == CKC_CLUBRELATIECODE].copy()
+    if df.empty:
+        return pd.DataFrame(columns=["Datum","Dag","Tijd","ISO_Year","Week","HomeTeam"])
 
+    # Afgeleide velden
     df["Dag"] = df["Datum"].dt.weekday.map(lambda i: DAYS_NL[i])
     df["Tijd"] = df["Datum"].dt.strftime("%H:%M")
     iso = df["Datum"].dt.isocalendar()
@@ -397,19 +429,17 @@ def normalize_program(data, tz_str: str) -> pd.DataFrame:
     df["Week"] = iso.week.astype(int)
 
     # Alleen slot-starttijden
-    ok_rows = []
-    for _, r in df.iterrows():
-        starts = [a for a, b in DEFAULT_SLOTS.get(r["Dag"], [])]
-        ok_rows.append(r["Tijd"] in starts)
-    df = df.loc[ok_rows].copy()
+    df = df[df.apply(lambda r: r["Tijd"] in [a for a, b in DEFAULT_SLOTS.get(r["Dag"], [])], axis=1)].copy()
+    if df.empty:
+        return pd.DataFrame(columns=["Datum","Dag","Tijd","ISO_Year","Week","HomeTeam"])
 
-    # Teamnaam bewerken (alleen thuisteam, CKC-voorvoegsel soms weg)
+    # Teamnaam opschonen (alleen thuisteam)
     df["HomeTeam"] = df[c_home].astype(str).map(_strip_ckc_prefix)
 
     return df[["Datum","Dag","Tijd","ISO_Year","Week","HomeTeam"]]
 
 def build_match_map(df_program: pd.DataFrame) -> Dict[tuple, list]:
-    """key=(ISO_Year, Week, Dag, Tijd) -> [ 'JO15-1', ... ]  (alleen CKC teams, al gefilterd)"""
+    """key=(ISO_Year, Week, Dag, Tijd) -> [ 'JO15-1', ... ]"""
     match_map = {}
     for _, r in df_program.iterrows():
         key = (int(r["ISO_Year"]), int(r["Week"]), r["Dag"], r["Tijd"])
@@ -462,7 +492,6 @@ def apply_manual_annotations(ws, matrix, annotations, week_label_style: str,
                 parts = label.split("-W")
                 y, w = int(parts[0]), int(parts[1])
             else:
-                # 'Week ww' -> jaar benaderen als huidig jaar (horizon ~60 dagen)
                 try:
                     w = int(label.split()[1])
                 except Exception:
@@ -484,7 +513,7 @@ def apply_manual_annotations(ws, matrix, annotations, week_label_style: str,
                     # 1) Handmatige input (rood)
                     for atext in annos:
                         rt.append(TextBlock(InlineFont(color="FFCC0000"), atext + "\n"))
-                    # 2) Wedstrijden (blauw) – alleen CKC teamnaam
+                    # 2) Wedstrijden (blauw)
                     for m in mm_list:
                         rt.append(TextBlock(InlineFont(color="FF1F4E79"), m + "\n"))
                     # 3) Divider + bestaande namen (zwart)
@@ -632,7 +661,7 @@ if st.button("Genereer rooster", use_container_width=True):
                                             gebruiklokaleteamgegevens="NEE")
             program_json = http_get_json(program_url)
             df_program = normalize_program(program_json, TZ)
-            df_program = filter_from_current_week(df_program.rename(columns={"Datum":"Datum"}), TZ)
+            df_program = filter_from_current_week(df_program, TZ)
             match_map = build_match_map(df_program)
 
             # Handmatige input
