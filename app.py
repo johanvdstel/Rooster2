@@ -525,9 +525,9 @@ def apply_manual_annotations(ws, matrix, annotations, week_label_style: str,
                     # 1) Handmatige input (rood)
                     for atext in annos:
                         rt.append(TextBlock(InlineFont(color="FFCC0000"), atext + "\n"))
-                    # 2) Wedstrijden (blauw) – teams gejoined met komma’s
+                    # 2) Wedstrijden (rood) – teams gejoined met komma’s
                     if mm_joined:
-                        rt.append(TextBlock(InlineFont(color="FF1F4E79"), mm_joined + "\n"))
+                        rt.append(TextBlock(InlineFont(color="FFCC0000"), mm_joined + "\n"))
                     # 3) Divider + bestaande namen (zwart)
                     if cur.strip():
                         rt.append(TextBlock(InlineFont(color="FF000000"), "---\n"))
