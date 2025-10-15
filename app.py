@@ -23,7 +23,10 @@ def now_naive_in_tz(tz_str: str) -> pd.Timestamp:
 def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
-# Onderdruk macOS LibreSSL warning van urllib3
+# ===== versie =====
+__version__ = "2.6"
+
+# ===== waarschuwingen onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
     "ignore",
     message=r"urllib3 v2 only supports OpenSSL.*",
@@ -71,7 +74,7 @@ DEFAULT_SLOTS: Dict[str, List[Tuple[str, str]]] = {
 # Dropbox handmatige input
 DROPBOX_INPUT_URL = "https://www.dropbox.com/scl/fi/ukcs87y9h1j27uyzcotig/rooster_input.txt?rlkey=fx0ayzshabo7zikun620m61hh&st=vtrlzr8k&dl=0"
 
-# ---------- Helpers ----------
+# ---------- helpers ----------
 def month_short_nl(m:int) -> str:
     return ["jan","feb","mrt","apr","mei","jun","jul","aug","sept","okt","nov","dec"][m-1]
 
@@ -98,26 +101,16 @@ def build_program_url(days: int, client_id: str, fields: str = PROGRAM_FIELDS,
         url += f"&fields={quote(fields)}"
     return url
 
-def http_get_json(url: str, timeout: int = 30, max_retries: int = 3, backoff_factor: float = 0.8):
+def http_get_json(url: str):
     headers = {"User-Agent": "CKC-Rooster/Streamlit", "Accept": "application/json"}
-    last_err = None
-    for attempt in range(1, max_retries + 1):
-        try:
-            r = requests.get(url, timeout=timeout, headers=headers)
-            r.raise_for_status()
-            data = r.json()
-            if isinstance(data, dict) and "items" in data:
-                data = data["items"]
-            if not isinstance(data, list):
-                raise ValueError("Unexpected JSON: expected a list of records.")
-            return data
-        except Exception as e:
-            last_err = e
-            if attempt < max_retries:
-                import time as _t; _t.sleep(backoff_factor * (2 ** (attempt - 1)))
-            else:
-                raise
-    raise last_err
+    r = requests.get(url, timeout=30, headers=headers)
+    r.raise_for_status()
+    data = r.json()
+    if isinstance(data, dict) and "items" in data:
+        data = data["items"]
+    if not isinstance(data, list):
+        raise ValueError("Unexpected JSON: expected a list of records.")
+    return data
 
 def _pick(colnames, candidates):
     for c in candidates:
@@ -241,13 +234,6 @@ def build_empty_matrix(slots: Dict[str, List[Tuple[str,str]]],
 
     return matrix
 
-def _hhmm_to_minutes(hhmm: str) -> int:
-    try:
-        h, m = hhmm.split(":")
-        return int(h) * 60 + int(m)
-    except Exception:
-        return -1
-
 def fill_names(matrix: pd.DataFrame, df: pd.DataFrame,
                slots: Dict[str, List[Tuple[str,str]]],
                week_label_style: str):
@@ -262,24 +248,45 @@ def fill_names(matrix: pd.DataFrame, df: pd.DataFrame,
                     t_to = tot; break
         col = (f"{y}-W{w:02d}" if week_label_style=="iso" else f"Week {w}")
         if (d in slots) and ((t_from, t_to) in slots.get(d, [])) and (col in matrix.columns):
-            cur = matrix.loc[(d, t_from, t_to, "Namen"), col]
+            key = (d, t_from, t_to, "Namen")
+            if key not in matrix.index:
+                continue
+            cur = matrix.loc[key, col]
             name = str(r["Naam"]) if pd.notna(r["Naam"]) else ""
-            matrix.loc[(d, t_from, t_to, "Namen"), col] = (cur + "\n" + name) if cur else name
+            matrix.loc[key, col] = (cur + "\n" + name) if cur else name
 
+# === aangepaste fill_manual (met bestaan-check) ===
 def fill_manual(matrix: pd.DataFrame, annotations, slots: Dict[str, List[Tuple[str,str]]],
                 week_label_style: str):
     def week_label(y, w): return f"{y}-W{w:02d}" if week_label_style=="iso" else f"Week {w}"
+
     for a in annotations:
         label = week_label(a["iso_year"], a["iso_week"])
+        if label not in matrix.columns:
+            continue
+
         tot = None
         for (v, t) in slots.get(a["day"], []):
             if v == a["time_from"]:
                 tot = t; break
-        if tot is None or label not in matrix.columns:
+        if tot is None:
             continue
+
         key = (a["day"], a["time_from"], tot, "Handmatig")
+        if key not in matrix.index:
+            continue  # voorkomt KeyError bij dagen die niet bestaan (bv. CK alleen Zaterdag)
+
         cur = matrix.loc[key, label]
-        matrix.loc[key, label] = (cur + "\n" + a["text"]) if cur else a["text"]
+        txt = a["text"].strip()
+        if txt:
+            matrix.loc[key, label] = (cur + "\n" + txt) if cur else txt
+
+def _hhmm_to_minutes(hhmm: str) -> int:
+    try:
+        h, m = hhmm.split(":")
+        return int(h) * 60 + int(m)
+    except Exception:
+        return -1
 
 def build_match_index_for_overlap(df_program: pd.DataFrame) -> Dict[tuple, List[Tuple[int, str]]]:
     idx: Dict[tuple, List[Tuple[int, str]]] = {}
@@ -315,19 +322,21 @@ def fill_matches(matrix: pd.DataFrame, match_index,
                 if v_from <= tmin < v_to:
                     teams.append(team)
             if teams:
-                matrix.loc[(d, van, tot, "Wedstrijden"), label] = ", ".join(teams)
+                key = (d, van, tot, "Wedstrijden")
+                if key in matrix.index:
+                    matrix.loc[key, label] = ", ".join(teams)
 
 def prune_empty_subrows(matrix: pd.DataFrame) -> pd.DataFrame:
-    # behoud headers (van==""==tot==""==regel=="")
-    keep = []
+    keep_flags = []
     for idx in matrix.index:
         d, van, tot, regel = idx
         if not van and not tot and not regel:
-            keep.append(True); continue
+            keep_flags.append(True)  # dag-header altijd houden
+            continue
         row = matrix.loc[idx]
         has_content = any(bool(str(v)) for v in row.values)
-        keep.append(has_content)
-    return matrix[keep]
+        keep_flags.append(has_content)
+    return matrix[keep_flags]
 
 # ===== formatter =====
 def format_sheet(ws, matrix: pd.DataFrame, slots: Dict[str, List[Tuple[str,str]]], tz_str: str):
@@ -337,16 +346,13 @@ def format_sheet(ws, matrix: pd.DataFrame, slots: Dict[str, List[Tuple[str,str]]
     wrap = Alignment(wrap_text=True, vertical="top")
     center = Alignment(horizontal="center", vertical="center")
 
-    first_week_col_idx = 4  # A:Dag, B:Tijd-van, C:Tijd-tot, D: (Regel is weggehaald), Eerder 5 -> nu 4
-    last_col_idx = first_week_col_idx + ws.max_column - 3  # dynamisch na delete
-
+    first_week_col_idx = 4  # A:Dag, B:Tijd-van, C:Tijd-tot, D: 1e weekkolom (Regel-kolom is verwijderd)
     # Bepaal laatste rij per dag voor dikke lijn
     day_last_row = {}
-    last_seen = {}
     for r_idx, (d, van, tot, regel) in enumerate(matrix.index, start=2):  # header is rij 1
-        last_seen[d] = r_idx
         if van and regel in ("Handmatig","Wedstrijden","Namen"):
             day_last_row[d] = r_idx
+
     # Opmaak per rij/kolom
     for r_idx, (d, van, tot, regel) in enumerate(matrix.index, start=2):
         is_header = (van == "" and tot == "" and regel == "")
@@ -357,11 +363,9 @@ def format_sheet(ws, matrix: pd.DataFrame, slots: Dict[str, List[Tuple[str,str]]
                 fill = PatternFill(start_color=DAY_COLORS.get(d, "FFFFFFFF"),
                                    end_color=DAY_COLORS.get(d, "FFFFFFFF"),
                                    fill_type="solid")
-                cell.fill = fill
-                cell.font = bold
-                cell.alignment = center
+                cell.fill = fill; cell.font = bold; cell.alignment = center
             else:
-                # Regel is intern; kleur op basis van regel
+                # kleur per subregel
                 if regel in ("Handmatig","Wedstrijden"):
                     cell.font = Font(color="FFCC0000")
                 else:
@@ -382,9 +386,9 @@ def format_sheet(ws, matrix: pd.DataFrame, slots: Dict[str, List[Tuple[str,str]]
                                  top=cell.border.top, bottom=cell.border.bottom)
 
     # Kolombreedtes
-    ws.column_dimensions['A'].width = 12
-    ws.column_dimensions['B'].width = 9
-    ws.column_dimensions['C'].width = 9
+    ws.column_dimensions['A'].width = 12  # Dag
+    ws.column_dimensions['B'].width = 9   # Tijd-van
+    ws.column_dimensions['C'].width = 9   # Tijd-tot
     for col_cells in ws.iter_cols(min_col=first_week_col_idx, max_col=ws.max_column):
         max_len = 14
         for cell in col_cells:
@@ -405,8 +409,7 @@ def format_sheet(ws, matrix: pd.DataFrame, slots: Dict[str, List[Tuple[str,str]]
 def _strip_ckc_prefix(name: str) -> str:
     if not isinstance(name, str):
         return ""
-    s = name.strip()
-    up = s.upper()
+    s = name.strip(); up = s.upper()
     if up.startswith("CKC JO") or up.startswith("CKC MO") or up.startswith("CKC O") or up.startswith("CKC VR"):
         return s[4:].lstrip()
     return s
@@ -486,8 +489,7 @@ def _ensure_dropbox_direct(url: str) -> str:
         return url
     try:
         pr = urlparse(url)
-        qs = parse_qs(pr.query)
-        qs["dl"] = ["1"]
+        qs = parse_qs(pr.query); qs["dl"] = ["1"]
         new_query = urlencode({k: v[0] for k, v in qs.items()})
         return urlunparse((pr.scheme, pr.netloc, pr.path, pr.params, new_query, pr.fragment))
     except Exception:
@@ -532,7 +534,6 @@ def make_excel(df_bar, df_ck, annotations, use_matches=True):
 
     # Vullen: wedstrijden
     if use_matches:
-        # bouw match index
         program_url = build_program_url(PROGRAM_DAYS_AHEAD, DEFAULT_CLIENT_ID, PROGRAM_FIELDS,
                                         eigenwedstrijden="JA", thuis="JA", uit="NEE",
                                         gebruiklokaleteamgegevens="NEE")
@@ -547,12 +548,13 @@ def make_excel(df_bar, df_ck, annotations, use_matches=True):
     matrix_bar = prune_empty_subrows(matrix_bar)
     matrix_ck  = prune_empty_subrows(matrix_ck)
 
+    # Schrijf naar Excel en verwijder de 'Regel'-kolom (kolom D)
     bio = io.BytesIO()
     with pd.ExcelWriter(bio, engine="openpyxl") as writer:
         # BarRooster
-        matrix_bar.to_excel(writer, sheet_name="BarRooster")  # index -> kolommen A-D (Regel = kolom D)
+        matrix_bar.to_excel(writer, sheet_name="BarRooster")
         ws_bar = writer.sheets["BarRooster"]
-        ws_bar.delete_cols(4)  # Regel-kolom verwijderen
+        ws_bar.delete_cols(4)  # kolom D
         format_sheet(ws_bar, matrix_bar, DEFAULT_SLOTS, TZ)
 
         # CommissieKamer
@@ -567,9 +569,9 @@ def make_excel(df_bar, df_ck, annotations, use_matches=True):
 # =========================
 # UI (simpel & mobiel)
 # =========================
-st.set_page_config(page_title="CKC Rooster generator", page_icon="🗓️", layout="centered")
+st.set_page_config(page_title=f"CKC Rooster generator v{__version__}", page_icon="🗓️", layout="centered")
 st.markdown("<h1 style='text-align:center;margin-bottom:0'>CKC Rooster generator</h1>", unsafe_allow_html=True)
-st.markdown("<h5 style='text-align:center;margin-top:0.25rem;color:#666'>versie 2.5</h5>", unsafe_allow_html=True)
+st.markdown(f"<h5 style='text-align:center;margin-top:0.25rem;color:#666'>versie {__version__}</h5>", unsafe_allow_html=True)
 st.caption("Sportlink → Excel · vaste instellingen (Europe/Amsterdam), weekoffset=-1, gefilterd vanaf huidige week")
 
 use_dropbox = st.checkbox("Handmatige input via Dropbox meenemen")
@@ -589,11 +591,8 @@ if st.button("Genereer rooster", use_container_width=True):
             # Handmatige input
             manual_text = ""
             if use_dropbox:
-                # Dropbox direct-download
-                pr = urlparse(DROPBOX_INPUT_URL)
-                qs = parse_qs(pr.query); qs["dl"] = ["1"]
-                direct_url = urlunparse((pr.scheme, pr.netloc, pr.path, pr.params, urlencode({k:v[0] for k,v in qs.items()}), pr.fragment))
-                manual_text = requests.get(direct_url, timeout=30).text
+                direct = _ensure_dropbox_direct(DROPBOX_INPUT_URL)
+                manual_text = requests.get(direct, timeout=30).text
             annotations = parse_manual_text(manual_text)
 
             # Excel bouwen (met/zonder wedstrijden)
