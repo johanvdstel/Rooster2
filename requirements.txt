@@ -1,5 +1,5 @@
-streamlit
-pandas
-requests
-openpyxl>=3.1.2
-backports.zoneinfo; python_version<"3.9"
+streamlit>=1.28
+pandas>=1.5
+openpyxl==3.1.5
+requests>=2.31
+backports.zoneinfo; python_version < "3.9"
