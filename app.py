@@ -9,7 +9,7 @@ import requests
 import streamlit as st
 from datetime import datetime
 from urllib.parse import quote, urlparse, parse_qs, urlencode, urlunparse
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, Color
 
 # ===== tijdzone helpers =====
 try:
@@ -387,7 +387,6 @@ def normalize_program(data, tz_str: str) -> pd.DataFrame:
     """Zet Sportlink 'programma' om naar kolommen:
        Datum (tz-naive, in Amsterdam), Dag, Tijd(HH:MM), ISO_Year, Week, HomeTeam.
        - Alleen thuiswedstrijden van CKC_CLUBRELATIECODE
-       - HomeTeam: CKC-voorvoegsel soms verwijderd
        - Parsing: gebruik uitsluitend 'wedstrijddatum' (bevat al tijd + offset)
     """
     df = pd.DataFrame(data)
@@ -425,7 +424,7 @@ def normalize_program(data, tz_str: str) -> pd.DataFrame:
     df["ISO_Year"] = iso.year.astype(int)
     df["Week"] = iso.week.astype(int)
 
-    # Alleen CKC teamnaam, prefix 'CKC ' soms weg
+    # Alleen CKC teamnaam (prefix 'CKC ' evt. weg)
     df["HomeTeam"] = df[c_home].astype(str).map(_strip_ckc_prefix)
 
     return df[["Datum","Dag","Tijd","ISO_Year","Week","HomeTeam"]]
@@ -440,7 +439,7 @@ def _hhmm_to_minutes(hhmm: str) -> int:
 
 def build_match_index_for_overlap(df_program: pd.DataFrame) -> Dict[tuple, List[Tuple[int, str]]]:
     """key=(ISO_Year, Week, Dag) -> list of (start_minutes, team).
-       We gebruiken alleen starttijd; overlap-criterium: slot_from <= start < slot_to.
+       Overlap-criterium: slot_from <= start < slot_to.
     """
     idx: Dict[tuple, List[Tuple[int, str]]] = {}
     for _, r in df_program.iterrows():
@@ -505,15 +504,12 @@ def apply_manual_annotations(ws, matrix, annotations, week_label_style: str,
 
             annos = anno_map.get(((d, van, tot), label), [])
 
-            # Wedstrijden binnen slot (overlap via starttijd in [van, tot))
+            # Wedstrijden binnen slot (start in [van, tot))
             mm_joined = ""
             if match_index is not None and v_from >= 0 and v_to > v_from:
                 for tmin, team in match_index.get((y, w, d), []):
                     if v_from <= tmin < v_to:
-                        if not mm_joined:
-                            mm_joined = team
-                        else:
-                            mm_joined = f"{mm_joined}, {team}"
+                        mm_joined = f"{mm_joined}, {team}" if mm_joined else team
 
             if not annos and not mm_joined:
                 continue
@@ -522,17 +518,27 @@ def apply_manual_annotations(ws, matrix, annotations, week_label_style: str,
             if _HAS_RICHTEXT:
                 try:
                     rt = CellRichText()
+
+                    # Expliciete kleuren (ARGB)
+                    RED_IF   = InlineFont(color=Color(rgb="FFCC0000"))  # handmatig + wedstrijden
+                    BLACK_IF = InlineFont(color=Color(rgb="FF000000"))  # divider + namen
+
                     # 1) Handmatige input (rood)
                     for atext in annos:
-                        rt.append(TextBlock(InlineFont(color="FFCC0000"), atext + "\n"))
-                    # 2) Wedstrijden (rood) – teams gejoined met komma’s
+                        rt.append(TextBlock(RED_IF, atext + "\n"))
+
+                    # 2) Wedstrijden (ook rood, joined)
                     if mm_joined:
-                        rt.append(TextBlock(InlineFont(color="FFCC0000"), mm_joined + "\n"))
+                        rt.append(TextBlock(RED_IF, mm_joined + "\n"))
+
                     # 3) Divider + bestaande namen (zwart)
                     if cur.strip():
-                        rt.append(TextBlock(InlineFont(color="FF000000"), "---\n"))
-                        rt.append(TextBlock(InlineFont(color="FF000000"), cur))
+                        rt.append(TextBlock(BLACK_IF, "---\n"))
+                        rt.append(TextBlock(BLACK_IF, cur))
+
                     cell.value = rt
+                    # Vangnet: zet cel-font expliciet op zwart
+                    cell.font = Font(color="FF000000")
                     cell.alignment = Alignment(wrap_text=True, vertical="top")
                     used_richtext = True
                 except Exception:
@@ -540,14 +546,14 @@ def apply_manual_annotations(ws, matrix, annotations, week_label_style: str,
 
             if not used_richtext:
                 lines = []
-                lines.extend(annos)   # (fallback: wordt rood)
+                lines.extend(annos)   # fallback: rood via cell.font
                 if mm_joined:
-                    lines.append(mm_joined)  # (fallback ook rood)
+                    lines.append(mm_joined)
                 if cur.strip():
                     lines.append("---")
                     lines.append(cur)
                 cell.value = "\n".join(lines)
-                cell.font = Font(color="FF0000")
+                cell.font = Font(color="FF0000")  # fallback: alles rood
                 cell.alignment = Alignment(wrap_text=True, vertical="top")
 
 # ===== Handmatige input (.txt) =====
@@ -651,7 +657,7 @@ def make_excel(df_bar, df_ck, annotations, match_index=None):
 # =========================
 st.set_page_config(page_title="CKC Rooster generator", page_icon="🗓️", layout="centered")
 st.markdown("<h1 style='text-align:center;margin-bottom:0'>CKC Rooster generator</h1>", unsafe_allow_html=True)
-st.markdown("<h5 style='text-align:center;margin-top:0.25rem;color:#666'>versie 2.2</h5>", unsafe_allow_html=True)
+st.markdown("<h5 style='text-align:center;margin-top:0.25rem;color:#666'>versie 2.3</h5>", unsafe_allow_html=True)
 st.caption("Sportlink → Excel · vaste instellingen (Europe/Amsterdam), weekoffset=-1, gefilterd vanaf huidige week")
 
 use_dropbox = st.checkbox("Handmatige input via Dropbox meenemen")
@@ -670,7 +676,7 @@ if st.button("Genereer rooster", use_container_width=True):
             df_bar = filter_from_current_week(normalize_dataframe(all_bar, TZ), TZ)
             df_ck  = filter_from_current_week(normalize_dataframe(all_ck,  TZ), TZ)
 
-            # Wedstrijden (alleen thuis, alleen CKC clubrelatiecode)
+            # Wedstrijden (alleen thuis, alleen CKC clubrelatiecode) met overlap-index
             match_index = None
             if use_matches:
                 program_url = build_program_url(PROGRAM_DAYS_AHEAD, DEFAULT_CLIENT_ID, PROGRAM_FIELDS,
