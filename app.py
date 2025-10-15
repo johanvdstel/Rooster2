@@ -9,7 +9,7 @@ import requests
 import streamlit as st
 from datetime import datetime
 from urllib.parse import quote, urlparse, parse_qs, urlencode, urlunparse
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, Color
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 # ===== tijdzone helpers =====
 try:
@@ -30,14 +30,6 @@ warnings.filterwarnings(
     category=Warning,
     module=r"urllib3\.__init__"
 )
-
-# Rich text detectie
-try:
-    from openpyxl.cell.rich_text import CellRichText, TextBlock
-    from openpyxl.cell.text import InlineFont
-    _HAS_RICHTEXT = True
-except Exception:
-    _HAS_RICHTEXT = False
 
 # === VASTE INSTELLINGEN ===
 DEFAULT_CLIENT_ID = "K662D1WXrt"
@@ -197,7 +189,6 @@ def filter_from_current_week(df: pd.DataFrame, tz_str: str) -> pd.DataFrame:
     if "Datum" not in df.columns:
         return df.iloc[0:0].copy()
 
-    # Forceer naar datetime als het per ongeluk object/str is
     if not pd.api.types.is_datetime64_any_dtype(df["Datum"]):
         df = df.copy()
         df["Datum"] = pd.to_datetime(df["Datum"], errors="coerce")
@@ -230,6 +221,9 @@ def derive_weeks(df: pd.DataFrame, tz_str: str, horizon_weeks_if_empty=4):
         iso = mon.isocalendar(); pair = (int(iso.year), int(iso.week))
         weeks_pairs.append(pair); week_mondays[pair] = mon
     return weeks_pairs, week_mondays
+
+# ===== Nieuw: matrix met subregels per slot =====
+REGELS = ["Handmatig", "Wedstrijden", "Namen"]
 
 def build_matrix(df: pd.DataFrame,
                  slots: Dict[str, List[Tuple[str,str]]],
@@ -270,32 +264,25 @@ def build_matrix(df: pd.DataFrame,
     days_to_use = DAYS_NL if days_subset is None else [d for d in DAYS_NL if d in days_subset]
     rows = []
     for d in days_to_use:
-        rows.append((d, "", ""))  # header
+        rows.append((d, "", "", ""))  # dag-header
         for (van, tot) in slots.get(d, []):
-            rows.append((d, van, tot))
+            for r in REGELS:
+                rows.append((d, van, tot, r))
 
     matrix = pd.DataFrame(
         "",
-        index=pd.MultiIndex.from_tuples(rows, names=["Dag","Tijd-van","Tijd-tot"]),
+        index=pd.MultiIndex.from_tuples(rows, names=["Dag","Tijd-van","Tijd-tot","Regel"]),
         columns=[week_label(p) for p in weeks_pairs]
     )
-
-    # MultiIndex sortering
-    mi = matrix.index
-    dag = pd.CategoricalIndex([tpl[0] for tpl in mi], categories=DAYS_NL, ordered=True, name="Dag")
-    tvan = [tpl[1] for tpl in mi]
-    ttot = [tpl[2] for tpl in mi]
-    matrix.index = pd.MultiIndex.from_arrays([dag, tvan, ttot], names=["Dag","Tijd-van","Tijd-tot"])
-    matrix.sort_index(level=[0,1,2], inplace=True)
 
     # Kolom-headers met datum
     for p in weeks_pairs:
         mon = week_mondays[p]; col = week_label(p)
         for d in days_to_use:
             day_date = (mon + pd.Timedelta(days=DAYS_NL.index(d))).strftime("%d-%b")
-            matrix.loc[(d,"",""), col] = f"{d} ({day_date})"
+            matrix.loc[(d,"","", ""), col] = f"{d} ({day_date})"
 
-    # Namen invullen
+    # Namen invullen in "Namen"-regel
     for _, r in df.iterrows():
         d = r["Dag"]; t_from = r["Tijd vanaf"]; t_to = r["Tijd tot"]
         w = int(r["Week"]); y = int(r["ISO_Year"])
@@ -306,11 +293,18 @@ def build_matrix(df: pd.DataFrame,
                     t_to = tot; break
         col = (f"{y}-W{w:02d}" if week_label_style=="iso" else f"Week {w}")
         if (d in slots) and ((t_from, t_to) in slots.get(d, [])) and (col in matrix.columns):
-            cur = matrix.loc[(d, t_from, t_to), col]
+            cur = matrix.loc[(d, t_from, t_to, "Namen"), col]
             name = str(r["Naam"]) if pd.notna(r["Naam"]) else ""
-            matrix.loc[(d, t_from, t_to), col] = (cur + "\n" + name) if cur else name
+            matrix.loc[(d, t_from, t_to, "Namen"), col] = (cur + "\n" + name) if cur else name
 
     return matrix
+
+def _hhmm_to_minutes(hhmm: str) -> int:
+    try:
+        h, m = hhmm.split(":")
+        return int(h) * 60 + int(m)
+    except Exception:
+        return -1
 
 def format_sheet(ws, matrix, slots: Dict[str, List[Tuple[str,str]]], tz_str: str):
     thin = Side(style="thin", color="FFAAAAAA")
@@ -319,18 +313,21 @@ def format_sheet(ws, matrix, slots: Dict[str, List[Tuple[str,str]]], tz_str: str
     wrap = Alignment(wrap_text=True, vertical="top")
     center = Alignment(horizontal="center", vertical="center")
 
-    first_week_col_idx = 4  # D
+    first_week_col_idx = 5  # A:Dag, B:Tijd-van, C:Tijd-tot, D:Regel, E:1e weekkolom
     last_col_idx = first_week_col_idx + len(matrix.columns) - 1
     first_data_row = 2
 
+    # Laatste rij per dag (na laatste REGEL van het laatste slot)
     day_last_row = {}
-    last_slot_for_day = {d: slots[d][-1] if slots.get(d) else ("","") for d in set([ix[0] for ix in matrix.index])}
-    for r_idx, (d, van, tot) in enumerate(matrix.index, start=first_data_row):
-        if van != "" and (van, tot) == last_slot_for_day.get(d, ("","")):
+    seen = {}
+    for r_idx, (d, van, tot, regel) in enumerate(matrix.index, start=first_data_row):
+        seen[d] = r_idx
+        if van and regel == REGELS[-1]:  # laatste subregel van dit slot
             day_last_row[d] = r_idx
 
-    for r_idx, (d, van, tot) in enumerate(matrix.index, start=first_data_row):
-        is_header = (van == "" and tot == "")
+    # Opmaak per cel/rij
+    for r_idx, (d, van, tot, regel) in enumerate(matrix.index, start=first_data_row):
+        is_header = (van == "" and tot == "" and regel == "")
         for c_idx in range(1, last_col_idx+1):
             cell = ws.cell(row=r_idx, column=c_idx)
             cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -338,15 +335,24 @@ def format_sheet(ws, matrix, slots: Dict[str, List[Tuple[str,str]]], tz_str: str
                 fill = PatternFill(start_color=DAY_COLORS.get(d, "FFFFFFFF"),
                                    end_color=DAY_COLORS.get(d, "FFFFFFFF"),
                                    fill_type="solid")
-                cell.fill = fill; cell.font = bold; cell.alignment = center
+                cell.fill = fill
+                cell.font = bold
+                cell.alignment = center
             else:
+                # Regel-kleur: Handmatig / Wedstrijden rood; Namen zwart
+                if regel in ("Handmatig", "Wedstrijden"):
+                    cell.font = Font(color="FFCC0000")
+                else:
+                    cell.font = Font(color="FF000000")
                 cell.alignment = wrap
+
         if r_idx in day_last_row.values():
             for c_idx in range(1, last_col_idx+1):
                 cell = ws.cell(row=r_idx, column=c_idx)
                 cell.border = Border(left=cell.border.left, right=cell.border.right,
                                      top=cell.border.top, bottom=thick)
 
+    # Dikke verticale scheiding tussen weekkolommen
     for j, _ in enumerate(matrix.columns, start=first_week_col_idx):
         for r in range(1, ws.max_row+1):
             cell = ws.cell(row=r, column=j)
@@ -357,7 +363,9 @@ def format_sheet(ws, matrix, slots: Dict[str, List[Tuple[str,str]]], tz_str: str
     ws.column_dimensions['A'].width = 12  # Dag
     ws.column_dimensions['B'].width = 9   # Tijd-van
     ws.column_dimensions['C'].width = 9   # Tijd-tot
-    for col_cells in ws.iter_cols(min_col=4, max_col=ws.max_column):
+    ws.column_dimensions['D'].width = 12  # Regel
+    # Weekkolommen
+    for col_cells in ws.iter_cols(min_col=first_week_col_idx, max_col=ws.max_column):
         max_len = 14
         for cell in col_cells:
             if cell.value:
@@ -371,7 +379,7 @@ def format_sheet(ws, matrix, slots: Dict[str, List[Tuple[str,str]]], tz_str: str
     try: a1.font = Font(italic=True, color="FF666666")
     except Exception: pass
 
-    ws.freeze_panes = "D2"
+    ws.freeze_panes = "E2"  # freeze tot en met kolom D (Regel) en header
 
 # ===== Wedstrijd-normalisatie =====
 def _strip_ckc_prefix(name: str) -> str:
@@ -402,7 +410,6 @@ def normalize_program(data, tz_str: str) -> pd.DataFrame:
         if col is None or col not in df.columns:
             return empty
 
-    # Parse ISO met offset -> UTC -> Amsterdam -> tz-naive
     dt = pd.to_datetime(df[c_date].astype(str).str.strip(), errors="coerce", utc=True)
     mask_ok = dt.notna()
     if not mask_ok.any():
@@ -424,18 +431,10 @@ def normalize_program(data, tz_str: str) -> pd.DataFrame:
     df["ISO_Year"] = iso.year.astype(int)
     df["Week"] = iso.week.astype(int)
 
-    # Alleen CKC teamnaam (prefix 'CKC ' evt. weg)
+    # Teamnaam normaliseren
     df["HomeTeam"] = df[c_home].astype(str).map(_strip_ckc_prefix)
 
     return df[["Datum","Dag","Tijd","ISO_Year","Week","HomeTeam"]]
-
-# ===== Wedstrijd-index voor snelle overlap lookup =====
-def _hhmm_to_minutes(hhmm: str) -> int:
-    try:
-        h, m = hhmm.split(":")
-        return int(h) * 60 + int(m)
-    except Exception:
-        return -1
 
 def build_match_index_for_overlap(df_program: pd.DataFrame) -> Dict[tuple, List[Tuple[int, str]]]:
     """key=(ISO_Year, Week, Dag) -> list of (start_minutes, team).
@@ -444,117 +443,14 @@ def build_match_index_for_overlap(df_program: pd.DataFrame) -> Dict[tuple, List[
     idx: Dict[tuple, List[Tuple[int, str]]] = {}
     for _, r in df_program.iterrows():
         y, w, d = int(r["ISO_Year"]), int(r["Week"]), r["Dag"]
-        tmin = _hhmm_to_minutes(str(r["Tijd"]))
+        try:
+            h, m = str(r["Tijd"]).split(":"); tmin = int(h)*60+int(m)
+        except Exception:
+            continue
         team = str(r["HomeTeam"]).strip()
-        if tmin >= 0 and team:
+        if team:
             idx.setdefault((y, w, d), []).append((tmin, team))
     return idx
-
-# ===== Annotaties + (optioneel) wedstrijden toepassen =====
-def apply_manual_annotations(ws, matrix, annotations, week_label_style: str,
-                             slots: Dict[str, List[Tuple[str,str]]],
-                             match_index: Optional[Dict[tuple, List[Tuple[int, str]]]] = None):
-    cols = list(matrix.columns)
-    col_index_by_label = {label: idx for idx, label in enumerate(cols, start=4)}  # D = eerste weekkolom
-
-    def week_label(y, w): return f"{y}-W{w:02d}" if week_label_style == "iso" else f"Week {w}"
-
-    row_index_by_key = {}; row_idx = 2
-    for (d, van, tot) in matrix.index:
-        row_index_by_key[(d, van, tot)] = row_idx; row_idx += 1
-
-    # Handmatige annotaties groeperen per cel
-    anno_map: Dict[tuple, list] = {}
-    for a in annotations:
-        label = week_label(a["iso_year"], a["iso_week"])
-        # 'tot' afleiden uit slots
-        tot = None
-        for (v, t) in slots.get(a["day"], []):
-            if v == a["time_from"]:
-                tot = t; break
-        if tot is None:
-            continue
-        key_row = (a["day"], a["time_from"], tot)
-        key_col = label
-        anno_map.setdefault((key_row, key_col), []).append(a["text"].strip())
-
-    # Render per cel
-    for (d, van, tot) in matrix.index:
-        if not van and not tot:
-            continue  # header
-        v_from = _hhmm_to_minutes(van) if van else -1
-        v_to   = _hhmm_to_minutes(tot) if tot else -1
-
-        for label in cols:
-            col_idx = col_index_by_label[label]
-            row_idx = row_index_by_key[(d, van, tot)]
-            cell = ws.cell(row=row_idx, column=col_idx)
-            cur = str(cell.value) if cell.value is not None else ""
-
-            # Week/jaar uit label
-            if week_label_style == "iso":
-                parts = label.split("-W")
-                y, w = int(parts[0]), int(parts[1])
-            else:
-                try:
-                    w = int(label.split()[1])
-                except Exception:
-                    continue
-                y = now_naive_in_tz(TZ).isocalendar().year
-
-            annos = anno_map.get(((d, van, tot), label), [])
-
-            # Wedstrijden binnen slot (start in [van, tot))
-            mm_joined = ""
-            if match_index is not None and v_from >= 0 and v_to > v_from:
-                for tmin, team in match_index.get((y, w, d), []):
-                    if v_from <= tmin < v_to:
-                        mm_joined = f"{mm_joined}, {team}" if mm_joined else team
-
-            if not annos and not mm_joined:
-                continue
-
-            used_richtext = False
-            if _HAS_RICHTEXT:
-                try:
-                    rt = CellRichText()
-
-                    # Expliciete kleuren (ARGB)
-                    RED_IF   = InlineFont(color=Color(rgb="FFCC0000"))  # handmatig + wedstrijden
-                    BLACK_IF = InlineFont(color=Color(rgb="FF000000"))  # divider + namen
-
-                    # 1) Handmatige input (rood)
-                    for atext in annos:
-                        rt.append(TextBlock(RED_IF, atext + "\n"))
-
-                    # 2) Wedstrijden (ook rood, joined)
-                    if mm_joined:
-                        rt.append(TextBlock(RED_IF, mm_joined + "\n"))
-
-                    # 3) Divider + bestaande namen (zwart)
-                    if cur.strip():
-                        rt.append(TextBlock(BLACK_IF, "---\n"))
-                        rt.append(TextBlock(BLACK_IF, cur))
-
-                    cell.value = rt
-                    # Vangnet: zet cel-font expliciet op zwart
-                    cell.font = Font(color="FF000000")
-                    cell.alignment = Alignment(wrap_text=True, vertical="top")
-                    used_richtext = True
-                except Exception:
-                    used_richtext = False
-
-            if not used_richtext:
-                lines = []
-                lines.extend(annos)   # fallback: rood via cell.font
-                if mm_joined:
-                    lines.append(mm_joined)
-                if cur.strip():
-                    lines.append("---")
-                    lines.append(cur)
-                cell.value = "\n".join(lines)
-                cell.font = Font(color="FF0000")  # fallback: alles rood
-                cell.alignment = Alignment(wrap_text=True, vertical="top")
 
 # ===== Handmatige input (.txt) =====
 def parse_manual_text(text: str):
@@ -622,7 +518,77 @@ def read_manual_text_from_dropbox(timeout: int = 30) -> str:
     r.raise_for_status()
     return r.text
 
-# ===== Excel bouwen =====
+# ===== Annotaties + wedstrijden invullen in matrix (per subregel) =====
+def apply_annotations_and_matches(ws, matrix: pd.DataFrame,
+                                 annotations, week_label_style: str,
+                                 slots: Dict[str, List[Tuple[str,str]]],
+                                 match_index: Optional[Dict[tuple, List[Tuple[int, str]]]] = None):
+    cols = list(matrix.columns)
+    col_index_by_label = {label: idx for idx, label in enumerate(cols, start=5)}  # E = eerste weekkolom
+
+    def week_label(y, w): return f"{y}-W{w:02d}" if week_label_style == "iso" else f"Week {w}"
+
+    # Snelle lookup van rij-indexen
+    row_index_by_key = {}
+    row_idx = 2
+    for (d, van, tot, regel) in matrix.index:
+        row_index_by_key[(d, van, tot, regel)] = row_idx
+        row_idx += 1
+
+    # Handmatige annotaties mappen per cel (naar subregel "Handmatig")
+    anno_map: Dict[Tuple[str, str, str, str, str], List[str]] = {}
+    for a in annotations:
+        label = week_label(a["iso_year"], a["iso_week"])
+        # 'tot' afleiden uit slots
+        tot = None
+        for (v, t) in slots.get(a["day"], []):
+            if v == a["time_from"]:
+                tot = t; break
+        if tot is None:
+            continue
+        key = (a["day"], a["time_from"], tot, "Handmatig", label)
+        anno_map.setdefault(key, []).append(a["text"].strip())
+
+    # Vul handmatige annotaties
+    for key, texts in anno_map.items():
+        d, van, tot, regel, label = key
+        if label not in cols: continue
+        r = row_index_by_key.get((d, van, tot, "Handmatig"))
+        c = col_index_by_label[label]
+        if r is None: continue
+        cell = ws.cell(row=r, column=c)
+        txt = "\n".join(t for t in texts if t)
+        if txt:
+            cell.value = txt
+
+    # Vul wedstrijden in subregel "Wedstrijden" (overlap via start in [van, tot))
+    if match_index is not None:
+        for (d, van, tot, regel) in matrix.index:
+            if not (van and tot and regel == "Wedstrijden"):
+                continue
+            v_from = _hhmm_to_minutes(van); v_to = _hhmm_to_minutes(tot)
+            if v_from < 0 or v_to <= v_from:
+                continue
+            # loop over kolommen (weken)
+            for label in cols:
+                if WEEK_LABEL == "iso":
+                    parts = label.split("-W"); y, w = int(parts[0]), int(parts[1])
+                else:
+                    try: w = int(label.split()[1])
+                    except Exception: continue
+                    y = now_naive_in_tz(TZ).isocalendar().year
+
+                teams = []
+                for tmin, team in match_index.get((y, w, d), []):
+                    if v_from <= tmin < v_to:
+                        teams.append(team)
+                if teams:
+                    r = row_index_by_key.get((d, van, tot, "Wedstrijden"))
+                    c = col_index_by_label[label]
+                    if r is None: continue
+                    cell = ws.cell(row=r, column=c)
+                    cell.value = ", ".join(teams)
+
 def make_excel(df_bar, df_ck, annotations, match_index=None):
     extra_weeks_pairs = sorted({(a["iso_year"], a["iso_week"]) for a in annotations})
     matrix_bar = build_matrix(df_bar, slots=DEFAULT_SLOTS, tz_str=TZ,
@@ -635,19 +601,21 @@ def make_excel(df_bar, df_ck, annotations, match_index=None):
 
     bio = io.BytesIO()
     with pd.ExcelWriter(bio, engine="openpyxl") as writer:
+        # BarRooster
         matrix_bar.to_excel(writer, sheet_name="BarRooster")
         ws_bar = writer.sheets["BarRooster"]
         format_sheet(ws_bar, matrix_bar, DEFAULT_SLOTS, TZ)
-        apply_manual_annotations(ws_bar, matrix_bar, annotations,
-                                 week_label_style=WEEK_LABEL, slots=DEFAULT_SLOTS,
-                                 match_index=match_index)
+        apply_annotations_and_matches(ws_bar, matrix_bar, annotations,
+                                      week_label_style=WEEK_LABEL, slots=DEFAULT_SLOTS,
+                                      match_index=match_index)
 
+        # CommissieKamer
         matrix_ck.to_excel(writer, sheet_name="CommissieKamer")
         ws_ck = writer.sheets["CommissieKamer"]
         format_sheet(ws_ck, matrix_ck, DEFAULT_SLOTS, TZ)
-        apply_manual_annotations(ws_ck, matrix_ck, annotations,
-                                 week_label_style=WEEK_LABEL, slots=DEFAULT_SLOTS,
-                                 match_index=match_index)
+        apply_annotations_and_matches(ws_ck, matrix_ck, annotations,
+                                      week_label_style=WEEK_LABEL, slots=DEFAULT_SLOTS,
+                                      match_index=match_index)
 
     bio.seek(0)
     return bio
@@ -657,7 +625,7 @@ def make_excel(df_bar, df_ck, annotations, match_index=None):
 # =========================
 st.set_page_config(page_title="CKC Rooster generator", page_icon="🗓️", layout="centered")
 st.markdown("<h1 style='text-align:center;margin-bottom:0'>CKC Rooster generator</h1>", unsafe_allow_html=True)
-st.markdown("<h5 style='text-align:center;margin-top:0.25rem;color:#666'>versie 2.3</h5>", unsafe_allow_html=True)
+st.markdown("<h5 style='text-align:center;margin-top:0.25rem;color:#666'>versie 2.4</h5>", unsafe_allow_html=True)
 st.caption("Sportlink → Excel · vaste instellingen (Europe/Amsterdam), weekoffset=-1, gefilterd vanaf huidige week")
 
 use_dropbox = st.checkbox("Handmatige input via Dropbox meenemen")
