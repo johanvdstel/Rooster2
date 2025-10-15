@@ -24,7 +24,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.6"
+__version__ = "2.7"
 
 # ===== waarschuwingen onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -327,12 +327,22 @@ def fill_matches(matrix: pd.DataFrame, match_index,
                     matrix.loc[key, label] = ", ".join(teams)
 
 def prune_empty_subrows(matrix: pd.DataFrame) -> pd.DataFrame:
+    """Verwijder lege subregels, behalve:
+       - dag-headers
+       - 'Namen'-regels (altijd tonen, ook als leeg) om lege tijdvakken zichtbaar te houden.
+    """
     keep_flags = []
     for idx in matrix.index:
         d, van, tot, regel = idx
+        # Dag-header altijd houden
         if not van and not tot and not regel:
-            keep_flags.append(True)  # dag-header altijd houden
+            keep_flags.append(True)
             continue
+        # 'Namen' nooit verwijderen (ook leeg zichtbaar)
+        if regel == "Namen":
+            keep_flags.append(True)
+            continue
+        # Overige subregels alleen houden als er inhoud is
         row = matrix.loc[idx]
         has_content = any(bool(str(v)) for v in row.values)
         keep_flags.append(has_content)
@@ -347,6 +357,7 @@ def format_sheet(ws, matrix: pd.DataFrame, slots: Dict[str, List[Tuple[str,str]]
     center = Alignment(horizontal="center", vertical="center")
 
     first_week_col_idx = 4  # A:Dag, B:Tijd-van, C:Tijd-tot, D: 1e weekkolom (Regel-kolom is verwijderd)
+
     # Bepaal laatste rij per dag voor dikke lijn
     day_last_row = {}
     for r_idx, (d, van, tot, regel) in enumerate(matrix.index, start=2):  # header is rij 1
@@ -359,18 +370,26 @@ def format_sheet(ws, matrix: pd.DataFrame, slots: Dict[str, List[Tuple[str,str]]
         for c_idx in range(1, ws.max_column+1):
             cell = ws.cell(row=r_idx, column=c_idx)
             cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
             if is_header:
                 fill = PatternFill(start_color=DAY_COLORS.get(d, "FFFFFFFF"),
                                    end_color=DAY_COLORS.get(d, "FFFFFFFF"),
                                    fill_type="solid")
-                cell.fill = fill; cell.font = bold; cell.alignment = center
+                cell.fill = fill
+                cell.font = bold
+                cell.alignment = center
             else:
-                # kleur per subregel
-                if regel in ("Handmatig","Wedstrijden"):
-                    cell.font = Font(color="FFCC0000")
-                else:
+                # NIEUW (v2.7): kolommen B en C altijd zwart
+                if c_idx in (2, 3):  # Tijd-van / Tijd-tot
                     cell.font = Font(color="FF000000")
-                cell.alignment = wrap
+                    cell.alignment = wrap
+                else:
+                    # Weekkolommen: kleur per subregel
+                    if regel in ("Handmatig","Wedstrijden"):
+                        cell.font = Font(color="FFCC0000")
+                    else:
+                        cell.font = Font(color="FF000000")
+                    cell.alignment = wrap
 
         if r_idx in day_last_row.values():
             for c_idx in range(1, ws.max_column+1):
@@ -520,9 +539,12 @@ def make_excel(df_bar, df_ck, annotations, use_matches=True):
     weeks_pairs, week_mondays = compute_weeks([df_bar, df_ck])
 
     # Lege matrixen opzetten
-    matrix_bar = build_empty_matrix(DEFAULT_SLOTS, TZ, None, 4, WEEK_LABEL, weeks_pairs, week_mondays)
+    def build_empty(slots, subset):
+        return build_empty_matrix(slots, TZ, subset, 4, WEEK_LABEL, weeks_pairs, week_mondays)
+
+    matrix_bar = build_empty(DEFAULT_SLOTS, None)
     days_subset_ck = ["Zaterdag"] if SAT_ONLY_CK else None
-    matrix_ck  = build_empty_matrix(DEFAULT_SLOTS, TZ, days_subset_ck, 4, WEEK_LABEL, weeks_pairs, week_mondays)
+    matrix_ck  = build_empty(DEFAULT_SLOTS, days_subset_ck)
 
     # Vullen: namen
     fill_names(matrix_bar, df_bar, DEFAULT_SLOTS, WEEK_LABEL)
@@ -544,7 +566,7 @@ def make_excel(df_bar, df_ck, annotations, use_matches=True):
         fill_matches(matrix_bar, match_index, WEEK_LABEL, DEFAULT_SLOTS)
         fill_matches(matrix_ck,  match_index, WEEK_LABEL, DEFAULT_SLOTS)
 
-    # Prune: verwijder subregels die volledig leeg zijn
+    # Prune: verwijder subregels die volledig leeg zijn, maar laat 'Namen' altijd staan
     matrix_bar = prune_empty_subrows(matrix_bar)
     matrix_ck  = prune_empty_subrows(matrix_ck)
 
