@@ -24,9 +24,9 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.7"
+__version__ = "2.8"
 
-# ===== waarschuwingen onderdrukken (macOS LibreSSL/urllib3) =====
+# ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
     "ignore",
     message=r"urllib3 v2 only supports OpenSSL.*",
@@ -234,28 +234,89 @@ def build_empty_matrix(slots: Dict[str, List[Tuple[str,str]]],
 
     return matrix
 
+# ===== helpers voor tijd =====
+def _hhmm_to_minutes(hhmm: str) -> int:
+    try:
+        h, m = hhmm.split(":")
+        return int(h) * 60 + int(m)
+    except Exception:
+        return -1
+
+# ===== v2.8: namen in ALLE overlappende slots plaatsen + WARNINGS (met datum) =====
 def fill_names(matrix: pd.DataFrame, df: pd.DataFrame,
                slots: Dict[str, List[Tuple[str,str]]],
-               week_label_style: str):
+               week_label_style: str) -> List[str]:
+    """
+    Plaats namen in ALLE slots waarmee de dienst overlapt.
+    - Met eindtijd: overlapcriterium: max(rec_from, slot_from) < min(rec_to, slot_to)
+    - Zonder eindtijd: containment op starttijd: slot_from <= rec_from < slot_to
+    Retourneert een lijst met waarschuwingen (incl. datum) voor diensten die niet geplaatst konden worden.
+    """
+    warnings_list: List[str] = []
+
     for _, r in df.iterrows():
-        d = r["Dag"]; t_from = r["Tijd vanaf"]; t_to = r["Tijd tot"]
-        w = int(r["Week"]); y = int(r["ISO_Year"])
-        if pd.isna(d) or pd.isna(w) or not t_from:
+        d = r.get("Dag")
+        t_from = str(r.get("Tijd vanaf") or "").strip()
+        t_to   = str(r.get("Tijd tot")   or "").strip()
+        naam   = str(r.get("Naam") or "").strip()
+
+        # Datum-string (YYYY-MM-DD) voor meldingen
+        date_obj = r.get("Datum")
+        date_str = ""
+        try:
+            if isinstance(date_obj, pd.Timestamp):
+                date_str = date_obj.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+        if not d or not t_from:
             continue
-        if not t_to:
-            for (van, tot) in slots.get(d, []):
-                if van == t_from:
-                    t_to = tot; break
-        col = (f"{y}-W{w:02d}" if week_label_style=="iso" else f"Week {w}")
-        if (d in slots) and ((t_from, t_to) in slots.get(d, [])) and (col in matrix.columns):
-            key = (d, t_from, t_to, "Namen")
+
+        try:
+            w = int(r["Week"]); y = int(r["ISO_Year"])
+        except Exception:
+            continue
+        col = (f"{y}-W{w:02d}" if week_label_style == "iso" else f"Week {w}")
+        if col not in matrix.columns:
+            continue
+
+        rf = _hhmm_to_minutes(t_from)
+        rt = _hhmm_to_minutes(t_to) if t_to else -1
+
+        overlapped = []
+        for (sv, st) in slots.get(d, []):
+            sv_m = _hhmm_to_minutes(sv); st_m = _hhmm_to_minutes(st)
+            if rf < 0 or sv_m < 0 or st_m <= sv_m:
+                continue
+            if rt > rf:  # eindtijd aanwezig → overlap
+                if max(rf, sv_m) < min(rt, st_m):
+                    overlapped.append((sv, st))
+            else:
+                # geen eindtijd → containment op start
+                if sv_m <= rf < st_m:
+                    overlapped.append((sv, st))
+
+        if not overlapped:
+            beschrijving = f"{date_str} ({d}) {t_from}-{t_to}" if t_to else f"{date_str} ({d}) {t_from}"
+            msg = f"{naam or '(naam onbekend)'} — {beschrijving} kon niet worden geplaatst"
+            warnings_list.append(msg)
+            continue
+
+        if not naam:
+            naam = "(naam onbekend)"
+
+        for (sv, st) in overlapped:
+            key = (d, sv, st, "Namen")
             if key not in matrix.index:
+                beschrijving = f"{date_str} ({d}) {t_from}-{t_to}" if t_to else f"{date_str} ({d}) {t_from}"
+                warnings_list.append(f"{naam} — {beschrijving} past niet in de roosterstructuur")
                 continue
             cur = matrix.loc[key, col]
-            name = str(r["Naam"]) if pd.notna(r["Naam"]) else ""
-            matrix.loc[key, col] = (cur + "\n" + name) if cur else name
+            matrix.loc[key, col] = (cur + "\n" + naam) if cur else naam
 
-# === aangepaste fill_manual (met bestaan-check) ===
+    return warnings_list
+
+# === fill_manual (met bestaan-check) ===
 def fill_manual(matrix: pd.DataFrame, annotations, slots: Dict[str, List[Tuple[str,str]]],
                 week_label_style: str):
     def week_label(y, w): return f"{y}-W{w:02d}" if week_label_style=="iso" else f"Week {w}"
@@ -274,19 +335,12 @@ def fill_manual(matrix: pd.DataFrame, annotations, slots: Dict[str, List[Tuple[s
 
         key = (a["day"], a["time_from"], tot, "Handmatig")
         if key not in matrix.index:
-            continue  # voorkomt KeyError bij dagen die niet bestaan (bv. CK alleen Zaterdag)
+            continue  # voorkomt KeyError bij dagen die niet bestaan (bv. CK: alleen Zaterdag)
 
         cur = matrix.loc[key, label]
         txt = a["text"].strip()
         if txt:
             matrix.loc[key, label] = (cur + "\n" + txt) if cur else txt
-
-def _hhmm_to_minutes(hhmm: str) -> int:
-    try:
-        h, m = hhmm.split(":")
-        return int(h) * 60 + int(m)
-    except Exception:
-        return -1
 
 def build_match_index_for_overlap(df_program: pd.DataFrame) -> Dict[tuple, List[Tuple[int, str]]]:
     idx: Dict[tuple, List[Tuple[int, str]]] = {}
@@ -379,8 +433,8 @@ def format_sheet(ws, matrix: pd.DataFrame, slots: Dict[str, List[Tuple[str,str]]
                 cell.font = bold
                 cell.alignment = center
             else:
-                # NIEUW (v2.7): kolommen B en C altijd zwart
-                if c_idx in (2, 3):  # Tijd-van / Tijd-tot
+                # Kolommen B en C altijd zwart (tijden)
+                if c_idx in (2, 3):
                     cell.font = Font(color="FF000000")
                     cell.alignment = wrap
                 else:
@@ -546,9 +600,10 @@ def make_excel(df_bar, df_ck, annotations, use_matches=True):
     days_subset_ck = ["Zaterdag"] if SAT_ONLY_CK else None
     matrix_ck  = build_empty(DEFAULT_SLOTS, days_subset_ck)
 
-    # Vullen: namen
-    fill_names(matrix_bar, df_bar, DEFAULT_SLOTS, WEEK_LABEL)
-    fill_names(matrix_ck,  df_ck,  DEFAULT_SLOTS, WEEK_LABEL)
+    # Vullen: namen (overlap + warnings)
+    warn_bar = fill_names(matrix_bar, df_bar, DEFAULT_SLOTS, WEEK_LABEL)
+    warn_ck  = fill_names(matrix_ck,  df_ck,  DEFAULT_SLOTS, WEEK_LABEL)
+    warnings_total = warn_bar + warn_ck
 
     # Vullen: handmatig
     fill_manual(matrix_bar, annotations, DEFAULT_SLOTS, WEEK_LABEL)
@@ -586,7 +641,7 @@ def make_excel(df_bar, df_ck, annotations, use_matches=True):
         format_sheet(ws_ck, matrix_ck, DEFAULT_SLOTS, TZ)
 
     bio.seek(0)
-    return bio
+    return bio, warnings_total
 
 # =========================
 # UI (simpel & mobiel)
@@ -617,8 +672,12 @@ if st.button("Genereer rooster", use_container_width=True):
                 manual_text = requests.get(direct, timeout=30).text
             annotations = parse_manual_text(manual_text)
 
-            # Excel bouwen (met/zonder wedstrijden)
-            xlsx = make_excel(df_bar, df_ck, annotations, use_matches=use_matches)
+            # Excel bouwen (met/zonder wedstrijden) + waarschuwingen
+            xlsx, warnings_total = make_excel(df_bar, df_ck, annotations, use_matches=use_matches)
+
+        # Waarschuwingen tonen (als aanwezig)
+        if warnings_total:
+            st.warning("⚠️ Niet alle diensten konden worden geplaatst:\n\n- " + "\n- ".join(warnings_total))
 
         st.success("Klaar! Download hieronder het Excel-bestand.")
         st.download_button(
