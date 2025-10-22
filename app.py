@@ -24,7 +24,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.8"
+__version__ = "2.9"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -242,16 +242,10 @@ def _hhmm_to_minutes(hhmm: str) -> int:
     except Exception:
         return -1
 
-# ===== v2.8: namen in ALLE overlappende slots plaatsen + WARNINGS (met datum) =====
+# ===== v2.9: namen in ALLE overlappende slots + WARNINGS (met datum) =====
 def fill_names(matrix: pd.DataFrame, df: pd.DataFrame,
                slots: Dict[str, List[Tuple[str,str]]],
                week_label_style: str) -> List[str]:
-    """
-    Plaats namen in ALLE slots waarmee de dienst overlapt.
-    - Met eindtijd: overlapcriterium: max(rec_from, slot_from) < min(rec_to, slot_to)
-    - Zonder eindtijd: containment op starttijd: slot_from <= rec_from < slot_to
-    Retourneert een lijst met waarschuwingen (incl. datum) voor diensten die niet geplaatst konden worden.
-    """
     warnings_list: List[str] = []
 
     for _, r in df.iterrows():
@@ -335,8 +329,7 @@ def fill_manual(matrix: pd.DataFrame, annotations, slots: Dict[str, List[Tuple[s
 
         key = (a["day"], a["time_from"], tot, "Handmatig")
         if key not in matrix.index:
-            continue  # voorkomt KeyError bij dagen die niet bestaan (bv. CK: alleen Zaterdag)
-
+            continue
         cur = matrix.loc[key, label]
         txt = a["text"].strip()
         if txt:
@@ -402,74 +395,67 @@ def prune_empty_subrows(matrix: pd.DataFrame) -> pd.DataFrame:
         keep_flags.append(has_content)
     return matrix[keep_flags]
 
-# ===== formatter =====
+# ===== LICHTGEWICHT formatter (v2.9) =====
 def format_sheet(ws, matrix: pd.DataFrame, slots: Dict[str, List[Tuple[str,str]]], tz_str: str):
-    thin = Side(style="thin", color="FFAAAAAA")
-    thick = Side(style="thick", color="FF000000")
     bold = Font(bold=True)
-    wrap = Alignment(wrap_text=True, vertical="top")
     center = Alignment(horizontal="center", vertical="center")
+    wrap = Alignment(wrap_text=True, vertical="top")
 
-    first_week_col_idx = 4  # A:Dag, B:Tijd-van, C:Tijd-tot, D: 1e weekkolom (Regel-kolom is verwijderd)
+    thick = Side(style="thick", color="FF000000")
+    first_week_col_idx = 4  # A:Dag, B:Tijd-van, C:Tijd-tot, D: 1e week-kolom
 
-    # Bepaal laatste rij per dag voor dikke lijn
-    day_last_row = {}
-    for r_idx, (d, van, tot, regel) in enumerate(matrix.index, start=2):  # header is rij 1
-        if van and regel in ("Handmatig","Wedstrijden","Namen"):
-            day_last_row[d] = r_idx
-
-    # Opmaak per rij/kolom
+    # Dag-headers: kleur + bold + center
     for r_idx, (d, van, tot, regel) in enumerate(matrix.index, start=2):
         is_header = (van == "" and tot == "" and regel == "")
-        for c_idx in range(1, ws.max_column+1):
-            cell = ws.cell(row=r_idx, column=c_idx)
-            cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
-
-            if is_header:
-                fill = PatternFill(start_color=DAY_COLORS.get(d, "FFFFFFFF"),
-                                   end_color=DAY_COLORS.get(d, "FFFFFFFF"),
-                                   fill_type="solid")
-                cell.fill = fill
-                cell.font = bold
-                cell.alignment = center
-            else:
-                # Kolommen B en C altijd zwart (tijden)
-                if c_idx in (2, 3):
-                    cell.font = Font(color="FF000000")
-                    cell.alignment = wrap
-                else:
-                    # Weekkolommen: kleur per subregel
-                    if regel in ("Handmatig","Wedstrijden"):
-                        cell.font = Font(color="FFCC0000")
-                    else:
-                        cell.font = Font(color="FF000000")
-                    cell.alignment = wrap
-
-        if r_idx in day_last_row.values():
+        if is_header:
             for c_idx in range(1, ws.max_column+1):
                 cell = ws.cell(row=r_idx, column=c_idx)
-                cell.border = Border(left=cell.border.left, right=cell.border.right,
-                                     top=cell.border.top, bottom=thick)
+                cell.fill = PatternFill(start_color=DAY_COLORS.get(d, "FFFFFFFF"),
+                                        end_color=DAY_COLORS.get(d, "FFFFFFFF"),
+                                        fill_type="solid")
+                cell.font = bold
+                cell.alignment = center
 
-    # Dikke verticale scheiding tussen weekkolommen
-    for j in range(first_week_col_idx, ws.max_column+1):
-        for r in range(1, ws.max_row+1):
-            cell = ws.cell(row=r, column=j)
-            cell.border = Border(left=thick, right=cell.border.right,
-                                 top=cell.border.top, bottom=cell.border.bottom)
+    # Kolommen B/C: altijd zwart, maar alleen als er inhoud is (minder stijl-objecten)
+    for r_idx in range(2, ws.max_row+1):
+        for c_idx in (2, 3):
+            cell = ws.cell(row=r_idx, column=c_idx)
+            if cell.value not in (None, ""):
+                cell.font = Font(color="FF000000")
 
-    # Kolombreedtes
+    # Weekkolommen: geen globale randen; wrap/kleur alleen als er inhoud is
+    for r_idx, (d, van, tot, regel) in enumerate(matrix.index, start=2):
+        if van == "" and tot == "" and regel == "":
+            continue
+        for c_idx in range(first_week_col_idx, ws.max_column+1):
+            cell = ws.cell(row=r_idx, column=c_idx)
+            val = cell.value
+            if val not in (None, ""):
+                if regel in ("Handmatig", "Wedstrijden"):
+                    cell.font = Font(color="FFCC0000")
+                # Wrap alleen bij multi-namen of lange lijsten
+                sval = str(val)
+                if ("\n" in sval) or ("," in sval and len(sval) > 25):
+                    cell.alignment = wrap
+
+    # Dikke horizontale lijn onder elk dagblok (alleen bottom border toevoegen)
+    day_last_row = {}
+    for r_idx, (d, van, tot, regel) in enumerate(matrix.index, start=2):
+        if van and regel in ("Handmatig","Wedstrijden","Namen"):
+            day_last_row[d] = r_idx
+    for r_idx in day_last_row.values():
+        for c_idx in range(1, ws.max_column+1):
+            cell = ws.cell(row=r_idx, column=c_idx)
+            cell.border = Border(bottom=thick)
+
+    # Kolombreedtes (vast, geen dure autosize-loop)
     ws.column_dimensions['A'].width = 12  # Dag
     ws.column_dimensions['B'].width = 9   # Tijd-van
     ws.column_dimensions['C'].width = 9   # Tijd-tot
-    for col_cells in ws.iter_cols(min_col=first_week_col_idx, max_col=ws.max_column):
-        max_len = 14
-        for cell in col_cells:
-            if cell.value:
-                max_len = max(max_len, len(str(cell.value)))
-        ws.column_dimensions[col_cells[0].column_letter].width = min(max(int(max_len*0.75)+2, 10), 24)
+    for col in range(first_week_col_idx, ws.max_column+1):
+        ws.column_dimensions[ws.cell(row=1, column=col).column_letter].width = 18
 
-    # Timestamp in A1
+    # Timestamp in A1 (compact)
     now = now_naive_in_tz(tz_str)
     stamp = f"{now.day} {month_short_nl(now.month)} {now.strftime('%H:%M')}"
     a1 = ws.cell(row=1, column=1); a1.value = stamp
@@ -650,6 +636,9 @@ st.set_page_config(page_title=f"CKC Rooster generator v{__version__}", page_icon
 st.markdown("<h1 style='text-align:center;margin-bottom:0'>CKC Rooster generator</h1>", unsafe_allow_html=True)
 st.markdown(f"<h5 style='text-align:center;margin-top:0.25rem;color:#666'>versie {__version__}</h5>", unsafe_allow_html=True)
 st.caption("Sportlink → Excel · vaste instellingen (Europe/Amsterdam), weekoffset=-1, gefilterd vanaf huidige week")
+
+# iOS TIP
+st.info("**Tip voor iOS (Excel)**: kies na het downloaden in het deelmenu **‘Bewaar in Bestanden’** en open het bestand daarna vanuit **Bestanden**. Zo voorkom je ‘alleen-lezen’ en bevriezen bij openen.", icon="💡")
 
 use_dropbox = st.checkbox("Handmatige input via Dropbox meenemen")
 use_matches = st.checkbox("Wedstrijdinfo toevoegen", value=True)
