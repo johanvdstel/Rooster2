@@ -24,7 +24,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.8"
+__version__ = "2.9"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -60,7 +60,7 @@ DAY_COLORS = {
 
 # Shifts per dag: (Tijd-van, Tijd-tot)
 DEFAULT_SLOTS: Dict[str, List[Tuple[str, str]]] = {
-    "Maandag":   [("18:00","19:00"), ("19:00","20:00")],
+    "Maandag":   [("18:00","19:00"), ("19:00","20:00"), ("20:00","22:30")],
     "Dinsdag":   [("18:00","19:00"), ("19:00","20:00"), ("20:00","22:30")],
     "Woensdag":  [("17:00","18:00"), ("18:00","19:00"), ("19:00","22:00")],
     "Donderdag": [("18:00","19:00"), ("19:00","20:00"), ("20:00","22:30")],
