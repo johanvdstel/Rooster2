@@ -24,7 +24,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.91"
+__version__ = "2.92"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -41,7 +41,7 @@ DAYS_AHEAD = 60
 WEEK_OFFSET = -1
 FIELDS = "naam,datumvanaf,datumtot,tijdvanaf,tijdtot,lokatie,heledag"
 
-BAR_CODES = ["445", "701", "741"]
+BAR_CODES = ["445", "701", "741", "761"]
 CK_CODES  = ["442"]
 WEEK_LABEL = "short"          # of "iso"
 SAT_ONLY_CK = True            # CommissieKamer alleen zaterdag
