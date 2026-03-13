@@ -7,6 +7,7 @@ from typing import List, Dict, Tuple, Optional
 import pandas as pd
 import requests
 import streamlit as st
+import time
 from datetime import datetime
 from urllib.parse import quote, urlparse, parse_qs, urlencode, urlunparse
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -103,14 +104,40 @@ def build_program_url(days: int, client_id: str, fields: str = PROGRAM_FIELDS,
 
 def http_get_json(url: str):
     headers = {"User-Agent": "CKC-Rooster/Streamlit", "Accept": "application/json"}
-    r = requests.get(url, timeout=30, headers=headers)
-    r.raise_for_status()
-    data = r.json()
-    if isinstance(data, dict) and "items" in data:
-        data = data["items"]
-    if not isinstance(data, list):
-        raise ValueError("Unexpected JSON: expected a list of records.")
-    return data
+
+    max_retries = 3
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            st.write("Fetching:", url)
+
+            r = requests.get(url, timeout=30, headers=headers)
+            r.raise_for_status()
+
+            data = r.json()
+
+            if isinstance(data, dict) and "items" in data:
+                data = data["items"]
+
+            if not isinstance(data, list):
+                raise ValueError("Unexpected JSON: expected a list of records.")
+
+            return data
+
+        except (
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+            requests.exceptions.ChunkedEncodingError,
+        ) as e:
+
+            if attempt < max_retries:
+                st.warning(
+                    f"⚠️ Netwerkfout bij ophalen data "
+                    f"(poging {attempt}/{max_retries}). Opnieuw proberen…"
+                )
+                time.sleep(1)
+            else:
+                raise
 
 def _pick(colnames, candidates):
     for c in candidates:
