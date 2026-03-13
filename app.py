@@ -42,7 +42,7 @@ DAYS_AHEAD = 60
 WEEK_OFFSET = -1
 FIELDS = "naam,datumvanaf,datumtot,tijdvanaf,tijdtot,lokatie,heledag"
 
-BAR_CODES = ["445", "701", "741", "761"]
+BAR_CODES = ["701", "741", "761"]
 CK_CODES  = ["442"]
 WEEK_LABEL = "short"          # of "iso"
 SAT_ONLY_CK = True            # CommissieKamer alleen zaterdag
