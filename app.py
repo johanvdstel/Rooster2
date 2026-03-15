@@ -27,7 +27,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.9.7"
+__version__ = "2.9.8"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -158,6 +158,29 @@ def http_get_json(url: str):
                     st.warning(f"⚠️ Ophalen mislukt: {url}")
 
                 return []
+
+from concurrent.futures import ThreadPoolExecutor
+from itertools import chain
+
+@st.cache_data(ttl=300)
+def fetch_all(urls: List[str]) -> List[dict]:
+
+    if not urls:
+        return []
+
+    with ThreadPoolExecutor(max_workers=10) as exe:
+        results = list(exe.map(http_get_json, urls))
+
+    safe_results = []
+
+    for r in results:
+        if isinstance(r, list):
+            safe_results.append(r)
+        else:
+            safe_results.append([])
+
+    return list(chain.from_iterable(safe_results))
+
 
 def _pick(colnames, candidates):
     for c in candidates:
@@ -708,20 +731,6 @@ if st.button("Genereer rooster", use_container_width=True):
             # Vrijwilligersdata
             urls_bar = build_urls(BAR_CODES, DAYS_AHEAD, DEFAULT_CLIENT_ID, weekoffset=WEEK_OFFSET, fields=FIELDS)
             urls_ck  = build_urls(CK_CODES,  DAYS_AHEAD, DEFAULT_CLIENT_ID, weekoffset=WEEK_OFFSET, fields=FIELDS)
-            
-            from concurrent.futures import ThreadPoolExecutor
-            from itertools import chain
-            
-            @st.cache_data(ttl=300)
-            def fetch_all(urls):
-
-                with ThreadPoolExecutor(max_workers=10) as exe:
-                    results = list(exe.map(http_get_json, urls))
-            
-                # veiligheid: None → []
-                results = [r if r else [] for r in results]
-            
-                return list(chain.from_iterable(results))
                         
             all_bar = fetch_all(urls_bar)
             all_ck  = fetch_all(urls_ck)
