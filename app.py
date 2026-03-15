@@ -25,7 +25,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.9.3"
+__version__ = "2.9.5"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -109,7 +109,9 @@ def http_get_json(url: str):
 
     for attempt in range(1, max_retries + 1):
         try:
-            st.write("Fetching:", url)
+
+            if debug_fetch:
+                st.write("Fetching:", url)
 
             r = requests.get(url, timeout=30, headers=headers)
             r.raise_for_status()
@@ -131,10 +133,11 @@ def http_get_json(url: str):
         ) as e:
 
             if attempt < max_retries:
-                st.warning(
-                    f"⚠️ Netwerkfout bij ophalen data "
-                    f"(poging {attempt}/{max_retries}). Opnieuw proberen…"
-                )
+                if debug_fetch:
+                    st.warning(
+                        f"⚠️ Netwerkfout (poging {attempt}/{max_retries}) – opnieuw proberen"
+                    )
+                import time
                 time.sleep(1)
             else:
                 raise
@@ -680,6 +683,8 @@ st.caption("Sportlink → Excel · vaste instellingen (Europe/Amsterdam), weekof
 
 use_dropbox = st.checkbox("Handmatige input via Dropbox meenemen")
 use_matches = st.checkbox("Wedstrijdinfo toevoegen", value=True)
+debug_fetch = st.checkbox("Toon Sportlink fetch logging", value=False)
+
 
 if st.button("Genereer rooster", use_container_width=True):
     try:
@@ -687,8 +692,17 @@ if st.button("Genereer rooster", use_container_width=True):
             # Vrijwilligersdata
             urls_bar = build_urls(BAR_CODES, DAYS_AHEAD, DEFAULT_CLIENT_ID, weekoffset=WEEK_OFFSET, fields=FIELDS)
             urls_ck  = build_urls(CK_CODES,  DAYS_AHEAD, DEFAULT_CLIENT_ID, weekoffset=WEEK_OFFSET, fields=FIELDS)
-            all_bar = sum([http_get_json(u) for u in urls_bar], [])
-            all_ck  = sum([http_get_json(u) for u in urls_ck],  [])
+            
+            from concurrent.futures import ThreadPoolExecutor
+
+            def fetch_all(urls):
+                with ThreadPoolExecutor(max_workers=6) as exe:
+                    results = list(exe.map(http_get_json, urls))
+            return sum(results, [])
+
+            all_bar = fetch_all(urls_bar)
+            all_ck  = fetch_all(urls_ck)
+            
             df_bar = filter_from_current_week(normalize_dataframe(all_bar, TZ), TZ)
             df_ck  = filter_from_current_week(normalize_dataframe(all_ck,  TZ), TZ)
 
