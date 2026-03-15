@@ -736,7 +736,7 @@ st.markdown("<h1 style='text-align:center;margin-bottom:0'>CKC Rooster generator
 st.markdown(f"<h5 style='text-align:center;margin-top:0.25rem;color:#666'>versie {__version__}</h5>", unsafe_allow_html=True)
 st.caption("Sportlink → Excel · vaste instellingen (Europe/Amsterdam), weekoffset=-1, gefilterd vanaf huidige week")
 
-use_dropbox = st.checkbox("Handmatige input via Dropbox meenemen")
+use_dropbox = st.checkbox("Handmatige input via Dropbox meenemen", value=True)
 use_matches = st.checkbox("Wedstrijdinfo toevoegen", value=True)
 debug_fetch = st.checkbox("Toon Sportlink fetch logging", value=False)
 
