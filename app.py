@@ -12,13 +12,13 @@ from datetime import datetime
 from urllib.parse import quote, urlparse, parse_qs, urlencode, urlunparse
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
-session = requests.Session()
-
 # ===== tijdzone helpers =====
 try:
     from zoneinfo import ZoneInfo  # Python 3.9+
 except Exception:  # pragma: no cover
     from backports.zoneinfo import ZoneInfo
+
+session = requests.Session()
 
 def now_naive_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str))).tz_localize(None)
@@ -27,7 +27,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.9.6"
+__version__ = "2.9.7"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -105,11 +105,16 @@ def build_program_url(days: int, client_id: str, fields: str = PROGRAM_FIELDS,
     return url
 
 def http_get_json(url: str):
-    headers = {"User-Agent": "CKC-Rooster/Streamlit", "Accept": "application/json"}
+
+    headers = {
+        "User-Agent": "CKC-Rooster/Streamlit",
+        "Accept": "application/json"
+    }
 
     max_retries = 3
 
     for attempt in range(1, max_retries + 1):
+
         try:
 
             if debug_fetch:
@@ -122,28 +127,37 @@ def http_get_json(url: str):
 
             if not data:
                 return []
-            
+
             if isinstance(data, dict) and "items" in data:
                 data = data["items"]
-            
+
             if not isinstance(data, list):
                 return []
+
+            return data
 
         except (
             requests.exceptions.ConnectionError,
             requests.exceptions.Timeout,
             requests.exceptions.ChunkedEncodingError,
+            ValueError
         ) as e:
 
             if attempt < max_retries:
+
                 if debug_fetch:
                     st.warning(
                         f"⚠️ Netwerkfout (poging {attempt}/{max_retries}) – opnieuw proberen"
                     )
-                import time
+
                 time.sleep(1)
+
             else:
-                raise
+
+                if debug_fetch:
+                    st.warning(f"⚠️ Ophalen mislukt: {url}")
+
+                return []
 
 def _pick(colnames, candidates):
     for c in candidates:
@@ -697,13 +711,19 @@ if st.button("Genereer rooster", use_container_width=True):
             urls_ck  = build_urls(CK_CODES,  DAYS_AHEAD, DEFAULT_CLIENT_ID, weekoffset=WEEK_OFFSET, fields=FIELDS)
             
             from concurrent.futures import ThreadPoolExecutor
-
+            from itertools import chain
+            
             @st.cache_data(ttl=300)
             def fetch_all(urls):
-                with ThreadPoolExecutor(max_workers=6) as exe:
-                    results = list(exe.map(http_get_json, urls))
-                return sum(results, [])
 
+                with ThreadPoolExecutor(max_workers=10) as exe:
+                    results = list(exe.map(http_get_json, urls))
+            
+                # veiligheid: None → []
+                results = [r if r else [] for r in results]
+            
+                return list(chain.from_iterable(results))
+                        
             all_bar = fetch_all(urls_bar)
             all_ck  = fetch_all(urls_ck)
             
@@ -719,10 +739,9 @@ if st.button("Genereer rooster", use_container_width=True):
                     manual_text = requests.get(direct, timeout=30).text
                 except Exception:
                     manual_text = ""
-                    st.warning("Dropbox handmatige input kon niet worden opgehaald.")
-                            
-            annotations = parse_manual_text(manual_text)
-
+                    st.warning("Dropbox handmatige input kon niet worden opgehaald.")                   
+                            annotations = parse_manual_text(manual_text)
+                
             # Excel bouwen (met/zonder wedstrijden) + waarschuwingen
             xlsx, warnings_total = make_excel(df_bar, df_ck, annotations, use_matches=use_matches)
 
