@@ -27,7 +27,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.9.8"
+__version__ = "2.9.9"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -38,6 +38,7 @@ warnings.filterwarnings(
 )
 
 # === VASTE INSTELLINGEN ===
+debug_fetch = False
 DEFAULT_CLIENT_ID = "K662D1WXrt"
 TZ = "Europe/Amsterdam"
 DAYS_AHEAD = 60
@@ -111,7 +112,7 @@ def http_get_json(url: str):
         "Accept": "application/json"
     }
 
-    max_retries = 3
+    max_retries = 4
 
     for attempt in range(1, max_retries + 1):
 
@@ -120,16 +121,29 @@ def http_get_json(url: str):
             if debug_fetch:
                 st.write("Fetching:", url)
 
-            r = session.get(url, timeout=30, headers=headers)
+            r = session.get(
+                url,
+                timeout=(10, 30),   # connect, read
+                headers=headers
+            )
+
             r.raise_for_status()
 
-            data = r.json()
-
-            if not data:
+            # lege response
+            if not r.content:
                 return []
 
-            if isinstance(data, dict) and "items" in data:
-                data = data["items"]
+            try:
+                data = r.json()
+            except ValueError:
+                # JSON parse fout
+                if debug_fetch:
+                    st.warning("⚠️ JSON parse error")
+                return []
+
+            # Sportlink kan dict of list teruggeven
+            if isinstance(data, dict):
+                data = data.get("items", [])
 
             if not isinstance(data, list):
                 return []
@@ -140,17 +154,18 @@ def http_get_json(url: str):
             requests.exceptions.ConnectionError,
             requests.exceptions.Timeout,
             requests.exceptions.ChunkedEncodingError,
-            ValueError
+            requests.exceptions.ContentDecodingError,
+            requests.exceptions.HTTPError
         ) as e:
 
             if attempt < max_retries:
 
                 if debug_fetch:
                     st.warning(
-                        f"⚠️ Netwerkfout (poging {attempt}/{max_retries}) – opnieuw proberen"
+                        f"⚠️ Netwerkfout ({attempt}/{max_retries}) — opnieuw proberen"
                     )
 
-                time.sleep(1)
+                time.sleep(1.5)
 
             else:
 
@@ -744,7 +759,7 @@ if st.button("Genereer rooster", use_container_width=True):
                 direct = _ensure_dropbox_direct(DROPBOX_INPUT_URL)
                 
                 try:
-                    manual_text = requests.get(direct, timeout=30).text
+                    manual_text = session.get(direct, timeout=30).text
                 except Exception:
                     manual_text = ""
                     st.warning("Dropbox handmatige input kon niet worden opgehaald.")                   
