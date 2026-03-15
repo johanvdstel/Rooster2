@@ -27,7 +27,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.9.9"
+__version__ = "2.9.10"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -112,6 +112,24 @@ def http_get_json(url: str):
         "Accept": "application/json"
     }
 
+    # taakcode of endpoint uit URL halen
+    task_code = None
+    endpoint = "unknown"
+
+    try:
+        parsed = urlparse(url)
+
+        if "vrijwilligers" in parsed.path:
+            endpoint = "vrijwilligers"
+            qs = parse_qs(parsed.query)
+            task_code = qs.get("vrijwilligerstaakcode", ["?"])[0]
+
+        elif "programma" in parsed.path:
+            endpoint = "programma"
+
+    except Exception:
+        pass
+
     max_retries = 4
 
     for attempt in range(1, max_retries + 1):
@@ -119,34 +137,39 @@ def http_get_json(url: str):
         try:
 
             if debug_fetch:
-                st.write("Fetching:", url)
+
+                if endpoint == "vrijwilligers":
+                    st.write(f"Fetching vrijwilligers code {task_code} (poging {attempt})")
+
+                else:
+                    st.write(f"Fetching {endpoint} (poging {attempt})")
 
             r = session.get(
                 url,
-                timeout=(10, 30),   # connect, read
+                timeout=(10, 30),
                 headers=headers
             )
 
             r.raise_for_status()
 
-            # lege response
             if not r.content:
-                return []
-
-            try:
-                data = r.json()
-            except ValueError:
-                # JSON parse fout
                 if debug_fetch:
-                    st.warning("⚠️ JSON parse error")
+                    st.warning(f"⚠️ Lege response ({endpoint} {task_code})")
                 return []
 
-            # Sportlink kan dict of list teruggeven
+            data = r.json()
+
             if isinstance(data, dict):
                 data = data.get("items", [])
 
             if not isinstance(data, list):
                 return []
+
+            if debug_fetch:
+                if endpoint == "vrijwilligers":
+                    st.write(f"✔ {len(data)} records ontvangen voor code {task_code}")
+                else:
+                    st.write(f"✔ {len(data)} wedstrijden ontvangen")
 
             return data
 
@@ -155,22 +178,32 @@ def http_get_json(url: str):
             requests.exceptions.Timeout,
             requests.exceptions.ChunkedEncodingError,
             requests.exceptions.ContentDecodingError,
-            requests.exceptions.HTTPError
+            requests.exceptions.HTTPError,
+            ValueError
         ) as e:
 
-            if attempt < max_retries:
+            if debug_fetch:
 
-                if debug_fetch:
+                if endpoint == "vrijwilligers":
                     st.warning(
-                        f"⚠️ Netwerkfout ({attempt}/{max_retries}) — opnieuw proberen"
+                        f"⚠️ Netwerkfout code {task_code} ({attempt}/{max_retries})"
+                    )
+                else:
+                    st.warning(
+                        f"⚠️ Netwerkfout {endpoint} ({attempt}/{max_retries})"
                     )
 
+            if attempt < max_retries:
                 time.sleep(1.5)
-
             else:
 
                 if debug_fetch:
-                    st.warning(f"⚠️ Ophalen mislukt: {url}")
+
+                    if endpoint == "vrijwilligers":
+                        st.error(f"❌ Ophalen mislukt voor vrijwilligers code {task_code}")
+
+                    else:
+                        st.error(f"❌ Ophalen mislukt voor {endpoint}")
 
                 return []
 
