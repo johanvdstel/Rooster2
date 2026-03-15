@@ -12,6 +12,8 @@ from datetime import datetime
 from urllib.parse import quote, urlparse, parse_qs, urlencode, urlunparse
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
+session = requests.Session()
+
 # ===== tijdzone helpers =====
 try:
     from zoneinfo import ZoneInfo  # Python 3.9+
@@ -25,7 +27,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.9.5"
+__version__ = "2.9.6"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -113,18 +115,19 @@ def http_get_json(url: str):
             if debug_fetch:
                 st.write("Fetching:", url)
 
-            r = requests.get(url, timeout=30, headers=headers)
+            r = session.get(url, timeout=30, headers=headers)
             r.raise_for_status()
 
             data = r.json()
 
+            if not data:
+                return []
+            
             if isinstance(data, dict) and "items" in data:
                 data = data["items"]
-
+            
             if not isinstance(data, list):
-                raise ValueError("Unexpected JSON: expected a list of records.")
-
-            return data
+                return []
 
         except (
             requests.exceptions.ConnectionError,
@@ -695,10 +698,11 @@ if st.button("Genereer rooster", use_container_width=True):
             
             from concurrent.futures import ThreadPoolExecutor
 
+            @st.cache_data(ttl=300)
             def fetch_all(urls):
                 with ThreadPoolExecutor(max_workers=6) as exe:
                     results = list(exe.map(http_get_json, urls))
-            return sum(results, [])
+                return sum(results, [])
 
             all_bar = fetch_all(urls_bar)
             all_ck  = fetch_all(urls_ck)
@@ -710,7 +714,13 @@ if st.button("Genereer rooster", use_container_width=True):
             manual_text = ""
             if use_dropbox:
                 direct = _ensure_dropbox_direct(DROPBOX_INPUT_URL)
-                manual_text = requests.get(direct, timeout=30).text
+                
+                try:
+                    manual_text = requests.get(direct, timeout=30).text
+                except Exception:
+                    manual_text = ""
+                    st.warning("Dropbox handmatige input kon niet worden opgehaald.")
+                            
             annotations = parse_manual_text(manual_text)
 
             # Excel bouwen (met/zonder wedstrijden) + waarschuwingen
