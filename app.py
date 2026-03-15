@@ -27,7 +27,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.9.10"
+__version__ = "2.9.11"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -211,24 +211,39 @@ from concurrent.futures import ThreadPoolExecutor
 from itertools import chain
 
 @st.cache_data(ttl=300)
-def fetch_all(urls: List[str]) -> List[dict]:
+def fetch_all(urls: List[str]):
 
-    if not urls:
-        return []
+    results = []
 
     with ThreadPoolExecutor(max_workers=10) as exe:
-        results = list(exe.map(http_get_json, urls))
+        fetched = list(exe.map(http_get_json, urls))
 
-    safe_results = []
+    for url, r in zip(urls, fetched):
 
-    for r in results:
-        if isinstance(r, list):
-            safe_results.append(r)
-        else:
-            safe_results.append([])
+        task_code = None
+        endpoint = "unknown"
 
-    return list(chain.from_iterable(safe_results))
+        try:
+            parsed = urlparse(url)
 
+            if "vrijwilligers" in parsed.path:
+                endpoint = "vrijwilligers"
+                qs = parse_qs(parsed.query)
+                task_code = qs.get("vrijwilligerstaakcode", ["?"])[0]
+
+        except Exception:
+            pass
+
+        if debug_fetch:
+
+            if endpoint == "vrijwilligers":
+                st.write(f"✔ vrijwilligers code {task_code}: {len(r)} records")
+            else:
+                st.write(f"✔ {endpoint}: {len(r)} records")
+
+        results.append(r if r else [])
+
+    return list(chain.from_iterable(results))
 
 def _pick(colnames, candidates):
     for c in candidates:
