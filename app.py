@@ -740,7 +740,8 @@ if st.button("Genereer rooster", use_container_width=True):
                 except Exception:
                     manual_text = ""
                     st.warning("Dropbox handmatige input kon niet worden opgehaald.")                   
-                            annotations = parse_manual_text(manual_text)
+            
+            annotations = parse_manual_text(manual_text)
                 
             # Excel bouwen (met/zonder wedstrijden) + waarschuwingen
             xlsx, warnings_total = make_excel(df_bar, df_ck, annotations, use_matches=use_matches)
