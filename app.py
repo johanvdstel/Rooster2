@@ -27,7 +27,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.9.11"
+__version__ = "2.9.12"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -211,7 +211,7 @@ from concurrent.futures import ThreadPoolExecutor
 from itertools import chain
 
 @st.cache_data(ttl=300)
-def fetch_all(urls: List[str]):
+def fetch_all(urls: List[str], debug: bool = False):
 
     results = []
 
@@ -221,7 +221,7 @@ def fetch_all(urls: List[str]):
     for url, r in zip(urls, fetched):
 
         task_code = None
-        endpoint = "unknown"
+        endpoint = "onbekend"
 
         try:
             parsed = urlparse(url)
@@ -234,17 +234,17 @@ def fetch_all(urls: List[str]):
         except Exception:
             pass
 
-        if debug_fetch:
+        if debug:
 
             if endpoint == "vrijwilligers":
                 st.write(f"✔ vrijwilligers code {task_code}: {len(r)} records")
             else:
                 st.write(f"✔ {endpoint}: {len(r)} records")
 
-        results.append(r if r else [])
+        results.append(r if isinstance(r, list) else [])
 
     return list(chain.from_iterable(results))
-
+    
 def _pick(colnames, candidates):
     for c in candidates:
         if c in colnames: return c
@@ -795,8 +795,8 @@ if st.button("Genereer rooster", use_container_width=True):
             urls_bar = build_urls(BAR_CODES, DAYS_AHEAD, DEFAULT_CLIENT_ID, weekoffset=WEEK_OFFSET, fields=FIELDS)
             urls_ck  = build_urls(CK_CODES,  DAYS_AHEAD, DEFAULT_CLIENT_ID, weekoffset=WEEK_OFFSET, fields=FIELDS)
                         
-            all_bar = fetch_all(urls_bar)
-            all_ck  = fetch_all(urls_ck)
+            all_bar = fetch_all(urls_bar, debug_fetch)
+            all_ck  = fetch_all(urls_ck, debug_fetch)
             
             df_bar = filter_from_current_week(normalize_dataframe(all_bar, TZ), TZ)
             df_ck  = filter_from_current_week(normalize_dataframe(all_ck,  TZ), TZ)
