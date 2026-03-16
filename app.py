@@ -27,7 +27,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.9.12"
+__version__ = "2.10"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -49,6 +49,11 @@ BAR_CODES = ["701", "741", "761"]
 CK_CODES  = ["442"]
 WEEK_LABEL = "short"          # of "iso"
 SAT_ONLY_CK = True            # CommissieKamer alleen zaterdag
+sportlink_stats = {
+    "calls": 0,
+    "retries": 0,
+    "failures": 0
+}
 
 # Wedstrijden (programma)
 PROGRAM_DAYS_AHEAD = 60
@@ -131,6 +136,7 @@ def http_get_json(url: str):
         pass
 
     max_retries = 4
+    sportlink_stats["calls"] += 1
 
     for attempt in range(1, max_retries + 1):
 
@@ -194,6 +200,7 @@ def http_get_json(url: str):
                     )
 
             if attempt < max_retries:
+                sportlink_stats["retries"] += 1
                 time.sleep(1.5)
             else:
 
@@ -204,6 +211,8 @@ def http_get_json(url: str):
 
                     else:
                         st.error(f"❌ Ophalen mislukt voor {endpoint}")
+                        
+                    sportlink_stats["failures"] += 1
 
                 return []
 
@@ -820,6 +829,18 @@ if st.button("Genereer rooster", use_container_width=True):
         # Waarschuwingen tonen (als aanwezig)
         if warnings_total:
             st.warning("⚠️ Niet alle diensten konden worden geplaatst:\n\n- " + "\n- ".join(warnings_total))
+            
+        calls = sportlink_stats["calls"]
+        
+        retries = sportlink_stats["retries"]
+        failures = sportlink_stats["failures"]
+
+        if failures > 0:
+            st.error(f"Sportlink status: probleem ({failures} fetch mislukt)")
+        elif retries > 0:
+            st.warning(f"Sportlink status: instabiel ({retries} retries nodig)")
+        else:
+            st.success("Sportlink status: OK")
 
         st.success("Klaar! Download hieronder het Excel-bestand.")
         st.download_button(
