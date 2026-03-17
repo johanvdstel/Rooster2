@@ -798,7 +798,7 @@ use_dropbox = st.checkbox("Handmatige input via Dropbox meenemen", value=True)
 use_matches = st.checkbox("Wedstrijdinfo toevoegen", value=True)
 # debug_fetch = st.checkbox("Toon Sportlink fetch logging", value=False)
 
-if st.checkbox("Toon Sportlink fetch logging", key="debug_fetch"):
+if st.checkbox("Toon Sportlink fetch logging (debug modus)", key="debug_fetch"):
     st.cache_data.clear()
     debug_fetch = True
     st.info("Debug modus actief (cache uitgeschakeld)")
