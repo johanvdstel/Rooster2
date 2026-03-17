@@ -27,7 +27,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.10"
+__version__ = "2.10.1"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -793,9 +793,17 @@ st.markdown("<h1 style='text-align:center;margin-bottom:0'>CKC Rooster generator
 st.markdown(f"<h5 style='text-align:center;margin-top:0.25rem;color:#666'>versie {__version__}</h5>", unsafe_allow_html=True)
 st.caption("Sportlink → Excel · vaste instellingen (Europe/Amsterdam), weekoffset=-1, gefilterd vanaf huidige week")
 
+
 use_dropbox = st.checkbox("Handmatige input via Dropbox meenemen", value=True)
 use_matches = st.checkbox("Wedstrijdinfo toevoegen", value=True)
 debug_fetch = st.checkbox("Toon Sportlink fetch logging", value=False)
+
+if st.checkbox("Toon fetch logging", key="debug_fetch"):
+    st.cache_data.clear()
+    debug_fetch = True
+    st.info("Debug modus actief (cache uitgeschakeld)")
+else:
+    debug_fetch = False
 
 if st.button("Genereer rooster", use_container_width=True):
     try:
