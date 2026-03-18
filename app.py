@@ -27,7 +27,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.10.1"
+__version__ = "2.11.0"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -383,6 +383,95 @@ def _hhmm_to_minutes(hhmm: str) -> int:
         return int(h) * 60 + int(m)
     except Exception:
         return -1
+        
+# == v2.11.0: default en custom slots samenvoegen  
+def merge_custom_slots_into_defaults(df_list, base_slots: Dict[str, List[Tuple[str, str]]]) -> Tuple[Dict[str, List[Tuple[str, str]]], List[str]]:
+    """
+    Haalt custom diensten uit data en voegt ze toe aan DEFAULT_SLOTS.
+    Inclusief:
+    - chronologisch sorteren
+    - overlap corrigeren (aansluiten)
+    - deduplicatie
+    Retourneert: (nieuwe_slots, warnings)
+    """
+    warnings = []
+    slots = {d: list(v) for d, v in base_slots.items()}
+
+    # verzamel alle diensten
+    for df in df_list:
+        if df is None or df.empty:
+            continue
+
+        for _, r in df.iterrows():
+            d = r.get("Dag")
+            t_from = str(r.get("Tijd vanaf") or "").strip()
+            t_to   = str(r.get("Tijd tot") or "").strip()
+
+            if not d or not t_from or not t_to:
+                continue
+
+            if d not in slots:
+                slots[d] = []
+
+            new_from = _hhmm_to_minutes(t_from)
+            new_to   = _hhmm_to_minutes(t_to)
+
+            if new_from < 0 or new_to <= new_from:
+                continue
+
+            adjusted_from = new_from
+            adjusted_to   = new_to
+
+            # overlap met bestaande slots corrigeren
+            for (sv, st) in slots[d]:
+                sv_m = _hhmm_to_minutes(sv)
+                st_m = _hhmm_to_minutes(st)
+
+                # overlap → inkorten
+                if max(adjusted_from, sv_m) < min(adjusted_to, st_m):
+                    if adjusted_from < sv_m:
+                        adjusted_to = min(adjusted_to, sv_m)
+                    else:
+                        adjusted_from = max(adjusted_from, st_m)
+
+            if adjusted_to <= adjusted_from:
+                warnings.append(f"{d} {t_from}-{t_to} volledig overlapt met bestaand slot")
+                continue
+
+            new_slot = (
+                f"{adjusted_from//60:02d}:{adjusted_from%60:02d}",
+                f"{adjusted_to//60:02d}:{adjusted_to%60:02d}"
+            )
+
+            if new_slot not in slots[d]:
+                slots[d].append(new_slot)
+                if (adjusted_from != new_from) or (adjusted_to != new_to):
+                    warnings.append(f"{d} {t_from}-{t_to} aangepast naar {new_slot[0]}-{new_slot[1]}")
+
+    # sorteren + aansluiten
+    for d in slots:
+        day_slots = sorted(slots[d], key=lambda x: _hhmm_to_minutes(x[0]))
+
+        merged = []
+        for sv, st in day_slots:
+            if not merged:
+                merged.append((sv, st))
+                continue
+
+            prev_sv, prev_st = merged[-1]
+            prev_end = _hhmm_to_minutes(prev_st)
+            cur_start = _hhmm_to_minutes(sv)
+
+            # aansluiten
+            if cur_start < prev_end:
+                sv = prev_st  # schuif start op
+
+            merged.append((sv, st))
+
+        slots[d] = merged
+
+    return slots, warnings
+
 
 # ===== v2.8: namen in ALLE overlappende slots plaatsen + WARNINGS (met datum) =====
 def fill_names(matrix: pd.DataFrame, df: pd.DataFrame,
@@ -718,6 +807,13 @@ def read_manual_text_from_dropbox(timeout: int = 30) -> str:
 
 # ===== Excel bouwen =====
 def make_excel(df_bar, df_ck, annotations, use_matches=True):
+
+    # 🔹 NIEUW: custom slots integreren
+    merged_slots, slot_warnings = merge_custom_slots_into_defaults(
+        [df_bar, df_ck],
+        DEFAULT_SLOTS
+    )    
+    
     # Weekrange bepalen: uit data + huidige week + annotaties
     def compute_weeks(df_list):
         pairs = set()
@@ -738,18 +834,18 @@ def make_excel(df_bar, df_ck, annotations, use_matches=True):
     def build_empty(slots, subset):
         return build_empty_matrix(slots, TZ, subset, 4, WEEK_LABEL, weeks_pairs, week_mondays)
 
-    matrix_bar = build_empty(DEFAULT_SLOTS, None)
     days_subset_ck = ["Zaterdag"] if SAT_ONLY_CK else None
-    matrix_ck  = build_empty(DEFAULT_SLOTS, days_subset_ck)
+    matrix_bar = build_empty(merged_slots, None)
+    matrix_ck  = build_empty(merged_slots, days_subset_ck)
 
     # Vullen: namen (overlap + warnings)
-    warn_bar = fill_names(matrix_bar, df_bar, DEFAULT_SLOTS, WEEK_LABEL)
-    warn_ck  = fill_names(matrix_ck,  df_ck,  DEFAULT_SLOTS, WEEK_LABEL)
-    warnings_total = warn_bar + warn_ck
+    warn_bar = fill_names(matrix_bar, df_bar, merged_slots, WEEK_LABEL)
+    warn_ck  = fill_names(matrix_ck,  df_ck,  merged_slots, WEEK_LABEL)
+    warnings_total = warn_bar + warn_ck + slot_warnings
 
     # Vullen: handmatig
-    fill_manual(matrix_bar, annotations, DEFAULT_SLOTS, WEEK_LABEL)
-    fill_manual(matrix_ck,  annotations, DEFAULT_SLOTS, WEEK_LABEL)
+    fill_manual(matrix_bar, annotations, merged_slots, WEEK_LABEL)
+    fill_manual(matrix_ck,  annotations, merged_slots, WEEK_LABEL)
 
     # Vullen: wedstrijden
     if use_matches:
@@ -760,8 +856,8 @@ def make_excel(df_bar, df_ck, annotations, use_matches=True):
         df_program = normalize_program(program_json, TZ)
         df_program = filter_from_current_week(df_program, TZ)
         match_index = build_match_index_for_overlap(df_program)
-        fill_matches(matrix_bar, match_index, WEEK_LABEL, DEFAULT_SLOTS)
-        fill_matches(matrix_ck,  match_index, WEEK_LABEL, DEFAULT_SLOTS)
+        fill_matches(matrix_bar, match_index, WEEK_LABEL, merged_slots)
+        fill_matches(matrix_ck,  match_index, WEEK_LABEL, merged_slots)
 
     # Prune: verwijder subregels die volledig leeg zijn, maar laat 'Namen' altijd staan
     matrix_bar = prune_empty_subrows(matrix_bar)
@@ -774,13 +870,13 @@ def make_excel(df_bar, df_ck, annotations, use_matches=True):
         matrix_bar.to_excel(writer, sheet_name="BarRooster")
         ws_bar = writer.sheets["BarRooster"]
         ws_bar.delete_cols(4)  # kolom D
-        format_sheet(ws_bar, matrix_bar, DEFAULT_SLOTS, TZ)
+        format_sheet(ws_bar, matrix_bar, merged_slots, TZ)
 
         # CommissieKamer
         matrix_ck.to_excel(writer, sheet_name="CommissieKamer")
         ws_ck = writer.sheets["CommissieKamer"]
         ws_ck.delete_cols(4)
-        format_sheet(ws_ck, matrix_ck, DEFAULT_SLOTS, TZ)
+        format_sheet(ws_ck, matrix_ck, merged_slots, TZ)
 
     bio.seek(0)
     return bio, warnings_total
