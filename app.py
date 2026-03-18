@@ -27,7 +27,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.11.1"
+__version__ = "2.11.2"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -455,9 +455,12 @@ def merge_custom_slots_into_defaults(df_list, base_slots: Dict[str, List[Tuple[s
 
             if new_slot not in slots[d]:
                 slots[d].append(new_slot)
+            
                 if (adjusted_from != new_from) or (adjusted_to != new_to):
                     warnings.append(f"{d} {t_from}-{t_to} aangepast naar {new_slot[0]}-{new_slot[1]}")
-
+                else:
+                    warnings.append(f"{d} {t_from}-{t_to} toegevoegd als nieuw tijdslot")
+                    
     # sorteren + aansluiten
     for d in slots:
         day_slots = sorted(slots[d], key=lambda x: _hhmm_to_minutes(x[0]))
