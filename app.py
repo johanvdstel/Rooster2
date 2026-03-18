@@ -27,7 +27,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.11.0"
+__version__ = "2.11.1"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -396,6 +396,12 @@ def merge_custom_slots_into_defaults(df_list, base_slots: Dict[str, List[Tuple[s
     """
     warnings = []
     slots = {d: list(v) for d, v in base_slots.items()}
+    
+    base_set = {
+        (d, sv, st)
+        for d, lst in base_slots.items()
+        for (sv, st) in lst
+    }
 
     # verzamel alle diensten
     for df in df_list:
@@ -413,6 +419,10 @@ def merge_custom_slots_into_defaults(df_list, base_slots: Dict[str, List[Tuple[s
             if d not in slots:
                 slots[d] = []
 
+            # 🔹 NIEUW: skip als exact bestaand slot
+            if (d, t_from, t_to) in base_set:
+                continue
+            
             new_from = _hhmm_to_minutes(t_from)
             new_to   = _hhmm_to_minutes(t_to)
 
@@ -469,6 +479,7 @@ def merge_custom_slots_into_defaults(df_list, base_slots: Dict[str, List[Tuple[s
             merged.append((sv, st))
 
         slots[d] = merged
+        warnings = list(dict.fromkeys(warnings))
 
     return slots, warnings
 
