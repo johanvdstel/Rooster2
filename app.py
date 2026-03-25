@@ -27,7 +27,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.11.2"
+__version__ = "2.12.0"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -600,28 +600,58 @@ def build_match_index_for_overlap(df_program: pd.DataFrame) -> Dict[tuple, List[
 
 def fill_matches(matrix: pd.DataFrame, match_index,
                  week_label_style: str, slots: Dict[str, List[Tuple[str,str]]]):
+
     cols = list(matrix.columns)
+
     for (d, van, tot, regel) in matrix.index:
         if not (van and tot and regel == "Wedstrijden"):
             continue
-        v_from = _hhmm_to_minutes(van); v_to = _hhmm_to_minutes(tot)
+
+        v_from = _hhmm_to_minutes(van)
+        v_to   = _hhmm_to_minutes(tot)
+
         if v_from < 0 or v_to <= v_from:
             continue
+
         for label in cols:
+
             if week_label_style == "iso":
-                parts = label.split("-W"); y, w = int(parts[0]), int(parts[1])
+                parts = label.split("-W")
+                y, w = int(parts[0]), int(parts[1])
             else:
-                try: w = int(label.split()[1])
-                except Exception: continue
+                try:
+                    w = int(label.split()[1])
+                except Exception:
+                    continue
                 y = now_naive_in_tz(TZ).isocalendar().year
-            teams = []
-            for tmin, team in match_index.get((y, w, d), []):
+
+            matches = match_index.get((y, w, d), [])
+            if not matches:
+                continue
+
+            # 🔹 groepeer per tijd
+            grouped = {}
+            for tmin, team in matches:
                 if v_from <= tmin < v_to:
-                    teams.append(team)
-            if teams:
-                key = (d, van, tot, "Wedstrijden")
-                if key in matrix.index:
-                    matrix.loc[key, label] = ", ".join(teams)
+                    grouped.setdefault(tmin, []).append(team)
+
+            if not grouped:
+                continue
+
+            # 🔹 sorteer tijden
+            lines = []
+            for tmin in sorted(grouped.keys()):
+                hh = tmin // 60
+                mm = tmin % 60
+                tijd = f"{hh:02d}:{mm:02d}"
+                teams = ", ".join(grouped[tmin])
+                lines.append(f"{tijd}: {teams}")
+
+            text = "\n".join(lines)
+
+            key = (d, van, tot, "Wedstrijden")
+            if key in matrix.index:
+                matrix.loc[key, label] = text
 
 def prune_empty_subrows(matrix: pd.DataFrame) -> pd.DataFrame:
     """Verwijder lege subregels, behalve:
