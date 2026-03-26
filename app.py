@@ -27,7 +27,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.13.1"
+__version__ = "2.13.2"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -156,10 +156,14 @@ def apply_afgeschermd_overrides(matrix: pd.DataFrame,
                                  overrides: dict,
                                  location: str,
                                  week_label_style: str,
-                                 debug=False):
+                                 debug: bool = False):
+
+    applied_count = 0
+    added_count = 0
 
     for (dag, van, tot, regel) in matrix.index:
 
+        # Alleen Namen-regels met echte tijdsloten
         if regel != "Namen" or not van:
             continue
 
@@ -167,35 +171,7 @@ def apply_afgeschermd_overrides(matrix: pd.DataFrame,
 
             cell = matrix.loc[(dag, van, tot, regel), col]
 
-            names_existing = cell.split("\n") if cell else []
-
-            afgeschermd_idx = [i for i, n in enumerate(names_existing) if n.strip() == "Afgeschermd"]
-            
-            n = len(afgeschermd_idx)
-            m = len(names_override)
-            
-            # ===== CASE 1: vervangen =====
-            if n > 0:
-                replace_count = min(n, m)
-            
-                for i in range(replace_count):
-                    idx = afgeschermd_idx[i]
-                    names_existing[idx] = names_override[i]
-            
-                if debug:
-                    st.write(f"Override {location} {date} {van}: {replace_count}/{n} vervangen")
-            
-            # ===== CASE 2: toevoegen =====
-            elif m > 0:
-                names_existing.extend(names_override)
-            
-                if debug:
-                    st.write(f"Override {location} {date} {van}: {m} toegevoegd (geen Afgeschermd)")
-            
-            # terugschrijven
-            matrix.loc[(dag, van, tot, regel), col] = "\n".join(names_existing)
-
-            # week/year bepalen
+            # Week/jaar bepalen
             try:
                 if week_label_style == "iso":
                     y, w = map(int, col.split("-W"))
@@ -205,7 +181,7 @@ def apply_afgeschermd_overrides(matrix: pd.DataFrame,
             except Exception:
                 continue
 
-            # datum reconstrueren
+            # Datum reconstrueren
             try:
                 monday = pd.Timestamp.fromisocalendar(y, w, 1)
                 date = (monday + pd.Timedelta(days=DAYS_NL.index(dag))).strftime("%Y-%m-%d")
@@ -214,33 +190,57 @@ def apply_afgeschermd_overrides(matrix: pd.DataFrame,
 
             key = (date, van, location)
 
+            # Geen override → skip
             if key not in overrides:
                 continue
 
             names_override = overrides[key]
 
-            # split bestaande namen
-            names_existing = cell.split("\n")
-            afgeschermd_idx = [i for i, n in enumerate(names_existing) if n.strip() == "Afgeschermd"]
+            # Huidige celinhoud
+            names_existing = cell.split("\n") if cell else []
+
+            # Zoek Afgeschermd
+            afgeschermd_idx = [
+                i for i, n in enumerate(names_existing)
+                if n.strip().lower() == "afgeschermd"
+            ]
 
             n = len(afgeschermd_idx)
             m = len(names_override)
 
-            if n == 0:
-                continue
+            # ===== CASE 1: vervangen =====
+            if n > 0:
+                replace_count = min(n, m)
 
-            replace_count = min(n, m)
+                for i in range(replace_count):
+                    idx = afgeschermd_idx[i]
+                    names_existing[idx] = names_override[i]
 
-            # vervang alleen eerste N
-            for i in range(replace_count):
-                idx = afgeschermd_idx[i]
-                names_existing[idx] = names_override[i]
+                applied_count += replace_count
 
-            matrix.loc[(dag, van, tot, regel), col] = "\n".join(names_existing)
+                if debug:
+                    st.write(f"[override] {location} {date} {van}: {replace_count}/{n} vervangen")
 
-            if debug:
-                st.write(f"Override {location} {date} {van}: {replace_count}/{n} vervangen")
+            # ===== CASE 2: toevoegen =====
+            elif m > 0:
+                # voorkom dubbele namen
+                existing_set = {n.strip().lower() for n in names_existing if n.strip()}
 
+                to_add = [n for n in names_override if n.strip().lower() not in existing_set]
+
+                if to_add:
+                    names_existing.extend(to_add)
+                    added_count += len(to_add)
+
+                    if debug:
+                        st.write(f"[override] {location} {date} {van}: {len(to_add)} toegevoegd")
+
+            # Terugschrijven (alleen als iets veranderd is)
+            if n > 0 or (m > 0 and to_add):
+                matrix.loc[(dag, van, tot, regel), col] = "\n".join(names_existing)
+
+    if debug:
+        st.info(f"Overrides toegepast: {applied_count} vervangen, {added_count} toegevoegd")
 
 def month_short_nl(m:int) -> str:
     return ["jan","feb","mrt","apr","mei","jun","jul","aug","sept","okt","nov","dec"][m-1]
