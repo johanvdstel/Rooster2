@@ -27,7 +27,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.12.0"
+__version__ = "2.13.0"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -83,7 +83,140 @@ DEFAULT_SLOTS: Dict[str, List[Tuple[str, str]]] = {
 # Dropbox handmatige input
 DROPBOX_INPUT_URL = "https://www.dropbox.com/scl/fi/ukcs87y9h1j27uyzcotig/rooster_input.txt?rlkey=fx0ayzshabo7zikun620m61hh&st=vtrlzr8k&dl=0"
 
+DROPBOX_OVERRIDE_URL = "https://www.dropbox.com/scl/fi/w1711x6bzna5lniz0cvkw/Afgeschermd.txt?rlkey=cy3ltl3j427eqtg3k9ylwvc01&st=e6z7qa2n&dl=0"
+
 # ---------- helpers ----------
+def load_afgeschermd_overrides_from_dropbox(debug=False):
+    overrides = {}
+    warnings = []
+
+    try:
+        url = _ensure_dropbox_direct(DROPBOX_OVERRIDE_URL)
+        txt = session.get(url, timeout=30).text
+
+        for lineno, line in enumerate(txt.splitlines(), start=1):
+            raw = line.strip()
+
+            if not raw or raw.startswith("#"):
+                continue
+
+            parts = raw.split()
+
+            # basis check
+            if len(parts) < 4:
+                warnings.append(f"regel {lineno}: te weinig velden → '{raw}'")
+                continue
+
+            date_str, time_str, loc = parts[0], parts[1], parts[2].lower()
+            name = " ".join(parts[3:]).strip()
+
+            # datum validatie
+            try:
+                datetime.strptime(date_str, "%Y-%m-%d")
+            except Exception:
+                warnings.append(f"regel {lineno}: ongeldige datum → '{raw}'")
+                continue
+
+            # tijd validatie
+            try:
+                datetime.strptime(time_str, "%H:%M")
+            except Exception:
+                warnings.append(f"regel {lineno}: ongeldige tijd → '{raw}'")
+                continue
+
+            # locatie validatie
+            if loc not in ("bar", "ck"):
+                warnings.append(f"regel {lineno}: onbekende locatie '{loc}' → '{raw}'")
+                continue
+
+            # naam check
+            if not name:
+                warnings.append(f"regel {lineno}: ontbrekende naam → '{raw}'")
+                continue
+
+            key = (date_str, time_str, loc)
+            overrides.setdefault(key, []).append(name)
+
+        # logging
+        if debug:
+            st.write(f"Overrides geladen: {len(overrides)} geldige sleutels")
+
+        if warnings:
+            st.warning(
+                "⚠️ Ongeldige override regels overgeslagen:\n\n- " +
+                "\n- ".join(warnings)
+            )
+
+    except Exception as e:
+        st.error(f"Fout bij laden overrides: {e}")
+
+    return overrides
+
+def apply_afgeschermd_overrides(matrix: pd.DataFrame,
+                                 overrides: dict,
+                                 location: str,
+                                 week_label_style: str,
+                                 debug=False):
+
+    for (dag, van, tot, regel) in matrix.index:
+
+        if regel != "Namen" or not van:
+            continue
+
+        for col in matrix.columns:
+
+            cell = matrix.loc[(dag, van, tot, regel), col]
+
+            if not cell or "Afgeschermd" not in cell:
+                continue
+
+            # week/year bepalen
+            try:
+                if week_label_style == "iso":
+                    y, w = map(int, col.split("-W"))
+                else:
+                    w = int(col.split()[1])
+                    y = now_naive_in_tz(TZ).isocalendar().year
+            except Exception:
+                continue
+
+            # datum reconstrueren
+            try:
+                monday = pd.Timestamp.fromisocalendar(y, w, 1)
+                date = (monday + pd.Timedelta(days=DAYS_NL.index(dag))).strftime("%Y-%m-%d")
+            except Exception:
+                continue
+
+            key = (date, van, location)
+
+            if key not in overrides:
+                continue
+
+            names_override = overrides[key]
+
+            # split bestaande namen
+            names_existing = cell.split("\n")
+            afgeschermd_idx = [i for i, n in enumerate(names_existing) if n.strip() == "Afgeschermd"]
+
+            n = len(afgeschermd_idx)
+            m = len(names_override)
+
+            if n == 0:
+                continue
+
+            replace_count = min(n, m)
+
+            # vervang alleen eerste N
+            for i in range(replace_count):
+                idx = afgeschermd_idx[i]
+                names_existing[idx] = names_override[i]
+
+            matrix.loc[(dag, van, tot, regel), col] = "\n".join(names_existing)
+
+            if debug:
+                st.write(f"Override {location} {date} {van}: {replace_count}/{n} vervangen")
+
+
 def month_short_nl(m:int) -> str:
     return ["jan","feb","mrt","apr","mei","jun","jul","aug","sept","okt","nov","dec"][m-1]
 
@@ -850,8 +983,7 @@ def read_manual_text_from_dropbox(timeout: int = 30) -> str:
     return r.text
 
 # ===== Excel bouwen =====
-def make_excel(df_bar, df_ck, annotations, use_matches=True):
-
+def make_excel(df_bar, df_ck, annotations, use_matches=True, use_overrides=True):
     # 🔹 NIEUW: custom slots integreren
     merged_slots, slot_warnings = merge_custom_slots_into_defaults(
         [df_bar, df_ck],
@@ -886,6 +1018,13 @@ def make_excel(df_bar, df_ck, annotations, use_matches=True):
     warn_bar = fill_names(matrix_bar, df_bar, merged_slots, WEEK_LABEL)
     warn_ck  = fill_names(matrix_ck,  df_ck,  merged_slots, WEEK_LABEL)
     warnings_total = warn_bar + warn_ck + slot_warnings
+
+    # Overrides toepassen
+    if use_overrides:
+        overrides = load_afgeschermd_overrides_from_dropbox(debug_fetch)
+    
+        apply_afgeschermd_overrides(matrix_bar, overrides, "bar", WEEK_LABEL, debug_fetch)
+        apply_afgeschermd_overrides(matrix_ck,  overrides, "ck",  WEEK_LABEL, debug_fetch)
 
     # Vullen: handmatig
     fill_manual(matrix_bar, annotations, merged_slots, WEEK_LABEL)
@@ -936,6 +1075,8 @@ st.caption("Sportlink → Excel · vaste instellingen (Europe/Amsterdam), weekof
 
 use_dropbox = st.checkbox("Handmatige input via Dropbox meenemen", value=True)
 use_matches = st.checkbox("Wedstrijdinfo toevoegen", value=True)
+use_overrides = st.checkbox("Gebruik Afgeschermd overrides", value=True)
+
 # debug_fetch = st.checkbox("Toon Sportlink fetch logging", value=False)
 
 if st.checkbox("Toon Sportlink fetch logging (debug modus)", key="debug_fetch"):
@@ -972,7 +1113,15 @@ if st.button("Genereer rooster", use_container_width=True):
             annotations = parse_manual_text(manual_text)
                 
             # Excel bouwen (met/zonder wedstrijden) + waarschuwingen
-            xlsx, warnings_total = make_excel(df_bar, df_ck, annotations, use_matches=use_matches)
+            xlsx, warnings_total = make_excel(
+                df_bar,
+                df_ck,
+                annotations,
+                use_matches=use_matches,
+                use_overrides=use_overrides
+            )
+
+
 
         # Waarschuwingen tonen (als aanwezig)
         if warnings_total:
