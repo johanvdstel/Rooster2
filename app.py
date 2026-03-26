@@ -27,7 +27,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.13.0"
+__version__ = "2.13.1"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -167,8 +167,33 @@ def apply_afgeschermd_overrides(matrix: pd.DataFrame,
 
             cell = matrix.loc[(dag, van, tot, regel), col]
 
-            if not cell or "Afgeschermd" not in cell:
-                continue
+            names_existing = cell.split("\n") if cell else []
+
+            afgeschermd_idx = [i for i, n in enumerate(names_existing) if n.strip() == "Afgeschermd"]
+            
+            n = len(afgeschermd_idx)
+            m = len(names_override)
+            
+            # ===== CASE 1: vervangen =====
+            if n > 0:
+                replace_count = min(n, m)
+            
+                for i in range(replace_count):
+                    idx = afgeschermd_idx[i]
+                    names_existing[idx] = names_override[i]
+            
+                if debug:
+                    st.write(f"Override {location} {date} {van}: {replace_count}/{n} vervangen")
+            
+            # ===== CASE 2: toevoegen =====
+            elif m > 0:
+                names_existing.extend(names_override)
+            
+                if debug:
+                    st.write(f"Override {location} {date} {van}: {m} toegevoegd (geen Afgeschermd)")
+            
+            # terugschrijven
+            matrix.loc[(dag, van, tot, regel), col] = "\n".join(names_existing)
 
             # week/year bepalen
             try:
