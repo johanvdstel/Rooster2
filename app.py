@@ -1292,7 +1292,9 @@ if st.button("Genereer rooster", use_container_width=True):
         
         if placement_msgs:
             st.warning("⚠️ Niet alle diensten konden worden geplaatst:\n\n- " + "\n- ".join(placement_msgs))            
-                calls = sportlink_stats["calls"]
+        
+        
+        calls = sportlink_stats["calls"]
                 
         retries = sportlink_stats["retries"]
         failures = sportlink_stats["failures"]
