@@ -850,8 +850,9 @@ def fill_matches(
             for tmin, act in activities:
                 if v_from <= tmin < v_to:
                     grouped.setdefault(tmin, []).append(act)
-                        if not grouped:
-                            continue
+            
+            if not grouped:
+                continue
             
             # 🔹 sorteer tijden
             lines = []
