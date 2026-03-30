@@ -27,7 +27,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.14.1"
+__version__ = "2.14.2"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -653,6 +653,19 @@ def merge_custom_slots_into_defaults(
             start = _hhmm_to_minutes(t)
             end = start + 30
 
+            # 🔴 check overlap met bestaande slots
+            overlap = False
+            for (sv, st) in slots[d]:
+                sv_m = _hhmm_to_minutes(sv)
+                st_m = _hhmm_to_minutes(st)
+            
+                if max(start, sv_m) < min(end, st_m):
+                    overlap = True
+                    break
+            
+            if overlap:
+                continue  # skip activiteit slot
+            
             new_slot = (
                 f"{start//60:02d}:{start%60:02d}",
                 f"{end//60:02d}:{end%60:02d}"
@@ -680,9 +693,13 @@ def merge_custom_slots_into_defaults(
             # aansluiten
             if cur_start < prev_end:
                 sv = prev_st  # schuif start op
-
+            
+            # 🔴 NIEUW: check of slot nog geldig is
+            if _hhmm_to_minutes(st) <= _hhmm_to_minutes(sv):
+                continue  # skip invalid slot
+            
             merged.append((sv, st))
-
+            
         slots[d] = merged
         warnings = list(dict.fromkeys(warnings))
 
