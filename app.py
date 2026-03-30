@@ -27,7 +27,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.13.2"
+__version__ = "2.14.0"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -54,6 +54,21 @@ sportlink_stats = {
     "retries": 0,
     "failures": 0
 }
+
+# ===== Verenigingsactiviteiten =====
+ACTIVITIES_DAYS_AHEAD = 60
+
+ACTIVITIES_FIELDS = (
+    "kalendernaam,kalendersoort,activiteit,datumvan,datumtm,"
+    "heledag,beheerders,opmerkingen,plaats,url"
+)
+
+def build_activities_url(days: int, client_id: str, fields: str = ACTIVITIES_FIELDS) -> str:
+    base = "https://data.sportlink.com/verenigingsactiviteiten"
+    url = f"{base}?aantaldagen={int(days)}&client_id={client_id}"
+    if fields:
+        url += f"&fields={quote(fields)}"
+    return url
 
 # Wedstrijden (programma)
 PROGRAM_DAYS_AHEAD = 60
@@ -543,7 +558,11 @@ def _hhmm_to_minutes(hhmm: str) -> int:
         return -1
         
 # == v2.11.0: default en custom slots samenvoegen  
-def merge_custom_slots_into_defaults(df_list, base_slots: Dict[str, List[Tuple[str, str]]]) -> Tuple[Dict[str, List[Tuple[str, str]]], List[str]]:
+def merge_custom_slots_into_defaults(
+    df_list,
+    base_slots: Dict[str, List[Tuple[str, str]]],
+    activities_df: Optional[pd.DataFrame] = None
+) -> Tuple[Dict[str, List[Tuple[str, str]]], List[str]]:    
     """
     Haalt custom diensten uit data en voegt ze toe aan DEFAULT_SLOTS.
     Inclusief:
@@ -619,6 +638,31 @@ def merge_custom_slots_into_defaults(df_list, base_slots: Dict[str, List[Tuple[s
                 else:
                     warnings.append(f"{d} {t_from}-{t_to} toegevoegd als nieuw tijdslot")
                     
+    # 🔥 Activiteiten als extra tijdsloten
+    if activities_df is not None and not activities_df.empty:
+        for _, r in activities_df.iterrows():
+            d = r.get("Dag")
+            t = str(r.get("Tijd") or "").strip()
+
+            if not d or not t:
+                continue
+
+            if d not in slots:
+                slots[d] = []
+
+            start = _hhmm_to_minutes(t)
+            end = start + 30
+
+            new_slot = (
+                f"{start//60:02d}:{start%60:02d}",
+                f"{end//60:02d}:{end%60:02d}"
+            )
+
+            if new_slot not in slots[d]:
+                slots[d].append(new_slot)
+                warnings.append(f"📅 Activiteit slot toegevoegd: {d} {new_slot[0]}-{new_slot[1]}")
+    
+    
     # sorteren + aansluiten
     for d in slots:
         day_slots = sorted(slots[d], key=lambda x: _hhmm_to_minutes(x[0]))
@@ -756,10 +800,17 @@ def build_match_index_for_overlap(df_program: pd.DataFrame) -> Dict[tuple, List[
             idx.setdefault((y, w, d), []).append((tmin, team))
     return idx
 
-def fill_matches(matrix: pd.DataFrame, match_index,
-                 week_label_style: str, slots: Dict[str, List[Tuple[str,str]]]):
-
+def fill_matches(
+    matrix: pd.DataFrame,
+    match_index,
+    week_label_style: str,
+    slots: Dict[str, List[Tuple[str,str]]],
+    activities_index: Optional[Dict[tuple, List[Tuple[int, str]]]] = None
+):
     cols = list(matrix.columns)
+    
+    if activities_index is None:
+        activities_index = {}
 
     for (d, van, tot, regel) in matrix.index:
         if not (van and tot and regel == "Wedstrijden"):
@@ -784,18 +835,24 @@ def fill_matches(matrix: pd.DataFrame, match_index,
                 y = now_naive_in_tz(TZ).isocalendar().year
 
             matches = match_index.get((y, w, d), [])
-            if not matches:
-                continue
+            activities = activities_index.get((y, w, d), [])
 
+            if not matches and not activities:
+                continue
+                
             # 🔹 groepeer per tijd
             grouped = {}
+
             for tmin, team in matches:
                 if v_from <= tmin < v_to:
                     grouped.setdefault(tmin, []).append(team)
-
-            if not grouped:
-                continue
-
+            
+            for tmin, act in activities:
+                if v_from <= tmin < v_to:
+                    grouped.setdefault(tmin, []).append(act)
+                        if not grouped:
+                            continue
+            
             # 🔹 sorteer tijden
             lines = []
             for tmin in sorted(grouped.keys()):
@@ -954,6 +1011,61 @@ def normalize_program(data, tz_str: str) -> pd.DataFrame:
     df["HomeTeam"] = df[c_home].astype(str).map(_strip_ckc_prefix)
     return df[["Datum","Dag","Tijd","ISO_Year","Week","HomeTeam"]]
 
+# ====== normaliseer activiteiten ====
+def normalize_activities(data, tz_str: str) -> pd.DataFrame:
+    df = pd.DataFrame(data)
+
+    empty = pd.DataFrame(columns=["Datum","Dag","Tijd","ISO_Year","Week","Activiteit"])
+    if df.empty:
+        return empty
+
+    c_dt = _pick(df.columns, ["datumvan"])
+    c_name = _pick(df.columns, ["activiteit"])
+    c_heledag = _pick(df.columns, ["heledag"])
+
+    if not c_dt or not c_name:
+        return empty
+
+    dt = pd.to_datetime(df[c_dt], errors="coerce", utc=True)
+    dt = dt.dt.tz_convert(ZoneInfo(tz_str)).dt.tz_localize(None)
+
+    df["Datum"] = dt
+    df = df.dropna(subset=["Datum"])
+
+    df["Dag"] = df["Datum"].dt.weekday.map(lambda i: DAYS_NL[i])
+    df["Tijd"] = df["Datum"].dt.strftime("%H:%M")
+
+    iso = df["Datum"].dt.isocalendar()
+    df["ISO_Year"] = iso.year.astype(int)
+    df["Week"] = iso.week.astype(int)
+
+    df["Activiteit"] = df[c_name].astype(str).str.strip()
+
+    if c_heledag:
+        mask = df[c_heledag].astype(str).str.lower() == "true"
+        df.loc[mask, "Tijd"] = "00:00"
+
+    return df[["Datum","Dag","Tijd","ISO_Year","Week","Activiteit"]]
+
+def build_activities_index(df: pd.DataFrame) -> Dict[tuple, List[Tuple[int, str]]]:
+    idx: Dict[tuple, List[Tuple[int, str]]] = {}
+
+    for _, r in df.iterrows():
+        y, w, d = int(r["ISO_Year"]), int(r["Week"]), r["Dag"]
+
+        try:
+            h, m = r["Tijd"].split(":")
+            tmin = int(h)*60 + int(m)
+        except Exception:
+            continue
+
+        txt = r["Activiteit"]
+
+        if txt:
+            idx.setdefault((y, w, d), []).append((tmin, txt))
+
+    return idx
+
 # ===== Handmatige input (.txt) =====
 def parse_manual_text(text: str):
     entries = []
@@ -1008,12 +1120,18 @@ def read_manual_text_from_dropbox(timeout: int = 30) -> str:
     return r.text
 
 # ===== Excel bouwen =====
-def make_excel(df_bar, df_ck, annotations, use_matches=True, use_overrides=True):
+def make_excel(df_bar, df_ck, annotations,
+               use_matches=True,
+               use_overrides=True,
+               use_activities=True):    
     # 🔹 NIEUW: custom slots integreren
     merged_slots, slot_warnings = merge_custom_slots_into_defaults(
         [df_bar, df_ck],
-        DEFAULT_SLOTS
-    )    
+        DEFAULT_SLOTS,
+        df_activities if use_activities else None
+    )
+    
+    activities_index = build_activities_index(df_activities) if use_activities else {}
     
     # Weekrange bepalen: uit data + huidige week + annotaties
     def compute_weeks(df_list):
@@ -1055,6 +1173,17 @@ def make_excel(df_bar, df_ck, annotations, use_matches=True, use_overrides=True)
     fill_manual(matrix_bar, annotations, merged_slots, WEEK_LABEL)
     fill_manual(matrix_ck,  annotations, merged_slots, WEEK_LABEL)
 
+
+    df_activities = pd.DataFrame()
+    
+    if use_activities:
+        activities_url = build_activities_url(ACTIVITIES_DAYS_AHEAD, DEFAULT_CLIENT_ID)
+        activities_json = http_get_json(activities_url)
+    
+        df_activities = normalize_activities(activities_json, TZ)
+        df_activities = filter_from_current_week(df_activities, TZ)
+    
+
     # Vullen: wedstrijden
     if use_matches:
         program_url = build_program_url(PROGRAM_DAYS_AHEAD, DEFAULT_CLIENT_ID, PROGRAM_FIELDS,
@@ -1064,9 +1193,12 @@ def make_excel(df_bar, df_ck, annotations, use_matches=True, use_overrides=True)
         df_program = normalize_program(program_json, TZ)
         df_program = filter_from_current_week(df_program, TZ)
         match_index = build_match_index_for_overlap(df_program)
-        fill_matches(matrix_bar, match_index, WEEK_LABEL, merged_slots)
-        fill_matches(matrix_ck,  match_index, WEEK_LABEL, merged_slots)
-
+        fill_matches(matrix_bar, match_index, WEEK_LABEL, merged_slots, activities_index)
+        fill_matches(matrix_ck,  match_index, WEEK_LABEL, merged_slots, activities_index)
+    
+    
+    
+    
     # Prune: verwijder subregels die volledig leeg zijn, maar laat 'Namen' altijd staan
     matrix_bar = prune_empty_subrows(matrix_bar)
     matrix_ck  = prune_empty_subrows(matrix_ck)
@@ -1101,6 +1233,7 @@ st.caption("Sportlink → Excel · vaste instellingen (Europe/Amsterdam), weekof
 use_dropbox = st.checkbox("Handmatige input via Dropbox meenemen", value=True)
 use_matches = st.checkbox("Wedstrijdinfo toevoegen", value=True)
 use_overrides = st.checkbox("Gebruik Afgeschermd overrides", value=True)
+use_activities = st.checkbox("Verenigingsagenda toevoegen", value=True)
 
 # debug_fetch = st.checkbox("Toon Sportlink fetch logging", value=False)
 
@@ -1143,17 +1276,23 @@ if st.button("Genereer rooster", use_container_width=True):
                 df_ck,
                 annotations,
                 use_matches=use_matches,
-                use_overrides=use_overrides
+                use_overrides=use_overrides,
+                use_activities=use_activities
             )
 
 
 
         # Waarschuwingen tonen (als aanwezig)
-        if warnings_total:
-            st.warning("⚠️ Niet alle diensten konden worden geplaatst:\n\n- " + "\n- ".join(warnings_total))
-            
-        calls = sportlink_stats["calls"]
+        slot_msgs = [w for w in warnings_total if "slot" in w.lower()]
+        placement_msgs = [w for w in warnings_total if w not in slot_msgs]
+
+        if slot_msgs:
+            st.info("ℹ️ Tijdsloten automatisch toegevoegd:\n\n- " + "\n- ".join(slot_msgs))
         
+        if placement_msgs:
+            st.warning("⚠️ Niet alle diensten konden worden geplaatst:\n\n- " + "\n- ".join(placement_msgs))            
+                calls = sportlink_stats["calls"]
+                
         retries = sportlink_stats["retries"]
         failures = sportlink_stats["failures"]
 
