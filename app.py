@@ -27,7 +27,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.14.0"
+__version__ = "2.14.1"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -1125,6 +1125,17 @@ def make_excel(df_bar, df_ck, annotations,
                use_matches=True,
                use_overrides=True,
                use_activities=True):    
+    
+    df_activities = pd.DataFrame()
+    
+    if use_activities:
+        activities_url = build_activities_url(ACTIVITIES_DAYS_AHEAD, DEFAULT_CLIENT_ID)
+        activities_json = http_get_json(activities_url)
+    
+        df_activities = normalize_activities(activities_json, TZ)
+        df_activities = filter_from_current_week(df_activities, TZ)
+    
+    
     # 🔹 NIEUW: custom slots integreren
     merged_slots, slot_warnings = merge_custom_slots_into_defaults(
         [df_bar, df_ck],
@@ -1132,7 +1143,7 @@ def make_excel(df_bar, df_ck, annotations,
         df_activities if use_activities else None
     )
     
-    activities_index = build_activities_index(df_activities) if use_activities else {}
+    activities_index = build_activities_index(df_activities) if not df_activities.empty else {}    
     
     # Weekrange bepalen: uit data + huidige week + annotaties
     def compute_weeks(df_list):
@@ -1173,17 +1184,6 @@ def make_excel(df_bar, df_ck, annotations,
     # Vullen: handmatig
     fill_manual(matrix_bar, annotations, merged_slots, WEEK_LABEL)
     fill_manual(matrix_ck,  annotations, merged_slots, WEEK_LABEL)
-
-
-    df_activities = pd.DataFrame()
-    
-    if use_activities:
-        activities_url = build_activities_url(ACTIVITIES_DAYS_AHEAD, DEFAULT_CLIENT_ID)
-        activities_json = http_get_json(activities_url)
-    
-        df_activities = normalize_activities(activities_json, TZ)
-        df_activities = filter_from_current_week(df_activities, TZ)
-    
 
     # Vullen: wedstrijden
     if use_matches:
