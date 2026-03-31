@@ -27,7 +27,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "3.0.1"
+__version__ = "3.0.2"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -150,10 +150,13 @@ def build_activities_calendar_matrix(df_activities: pd.DataFrame,
         for _, r in group.sort_values("Tijd").iterrows():
             tijd = r["Tijd"]
             naam = r["Activiteit"]
-            lines.append(f"{tijd} {naam}")
-
-        matrix.loc[row, col] = "\n".join(lines)
-
+        
+            if r.get("IsAllDay", False):
+                lines.append(f"{naam}")
+            else:
+                lines.append(f"{tijd} {naam}")
+                matrix.loc[row, col] = "\n".join(lines)
+        
     return matrix
 
 def format_activities_calendar_sheet(ws, matrix: pd.DataFrame, tz_str: str):
@@ -1123,7 +1126,7 @@ def normalize_program(data, tz_str: str) -> pd.DataFrame:
 def normalize_activities(data, tz_str: str) -> pd.DataFrame:
     df = pd.DataFrame(data)
 
-    empty = pd.DataFrame(columns=["Datum","Dag","Tijd","ISO_Year","Week","Activiteit"])
+    empty = pd.DataFrame(columns=["Datum","Dag","Tijd","ISO_Year","Week","Activiteit","Date","IsAllDay"])
     if df.empty:
         return empty
 
@@ -1140,6 +1143,7 @@ def normalize_activities(data, tz_str: str) -> pd.DataFrame:
     df["Datum"] = dt
     df = df.dropna(subset=["Datum"])
 
+    # 🔹 BESTAANDE LOGICA (ongewijzigd)
     df["Dag"] = df["Datum"].dt.weekday.map(lambda i: DAYS_NL[i])
     df["Tijd"] = df["Datum"].dt.strftime("%H:%M")
 
@@ -1149,11 +1153,17 @@ def normalize_activities(data, tz_str: str) -> pd.DataFrame:
 
     df["Activiteit"] = df[c_name].astype(str).str.strip()
 
+    # 🔹 hele dag events
+    df["IsAllDay"] = False
     if c_heledag:
         mask = df[c_heledag].astype(str).str.lower() == "true"
         df.loc[mask, "Tijd"] = "00:00"
+        df.loc[mask, "IsAllDay"] = True
 
-    return df[["Datum","Dag","Tijd","ISO_Year","Week","Activiteit"]]
+    # 🆕 NIEUW voor kalender-grid
+    df["Date"] = df["Datum"].dt.date
+
+    return df[["Datum","Dag","Tijd","ISO_Year","Week","Activiteit","Date","IsAllDay"]]
 
 def build_activities_index(df: pd.DataFrame) -> Dict[tuple, List[Tuple[int, str]]]:
     idx: Dict[tuple, List[Tuple[int, str]]] = {}
