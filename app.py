@@ -27,7 +27,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "2.14.2"
+__version__ = "3.0.0"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -101,6 +101,96 @@ DROPBOX_INPUT_URL = "https://www.dropbox.com/scl/fi/ukcs87y9h1j27uyzcotig/rooste
 DROPBOX_OVERRIDE_URL = "https://www.dropbox.com/scl/fi/w1711x6bzna5lniz0cvkw/Afgeschermd.txt?rlkey=cy3ltl3j427eqtg3k9ylwvc01&st=e6z7qa2n&dl=0"
 
 # ---------- helpers ----------
+# ------ build activities calendar -------
+def build_activities_calendar_matrix(df_activities: pd.DataFrame,
+                                     week_label_style: str):
+
+    if df_activities.empty:
+        return pd.DataFrame()
+
+    df = df_activities.copy()
+
+    # sortering
+    df = df.sort_values(["ISO_Year", "Week", "Date", "Tijd"])
+
+    # unieke weken
+    weeks = sorted({
+        (int(y), int(w))
+        for y, w in zip(df["ISO_Year"], df["Week"])
+    })
+
+    # helper
+    def week_label(pair):
+        y, w = pair
+        return f"{y}-W{w:02d}" if week_label_style == "iso" else f"Week {w}"
+
+    # matrix structuur
+    matrix = pd.DataFrame(
+        "",
+        index=[week_label(w) for w in weeks],
+        columns=DAYS_NL
+    )
+
+    # 🔑 groepeer per dag
+    grouped = df.groupby(["ISO_Year", "Week", "Dag"])
+
+    for (y, w, dag), group in grouped:
+
+        col = dag
+        row = week_label((int(y), int(w)))
+
+        # datum bepalen (eerste entry)
+        date = group.iloc[0]["Date"]
+        date_str = date.strftime("%d-%m")
+
+        # header in cel
+        lines = [f"{dag[:2]} {date_str}"]
+
+        # activiteiten op tijd
+        for _, r in group.sort_values("Tijd").iterrows():
+            tijd = r["Tijd"]
+            naam = r["Activiteit"]
+            lines.append(f"{tijd} {naam}")
+
+        matrix.loc[row, col] = "\n".join(lines)
+
+    return matrix
+
+def format_activities_calendar_sheet(ws, matrix: pd.DataFrame, tz_str: str):
+    from openpyxl.styles import Font, Alignment
+
+    bold = Font(bold=True)
+    wrap = Alignment(wrap_text=True, vertical="top")
+
+    # headers
+    for cell in ws[1]:
+        cell.font = bold
+        cell.alignment = Alignment(horizontal="center")
+
+    # week kolom bold
+    for row in ws.iter_rows(min_row=2):
+        row[0].font = bold
+
+    # alle cellen wrap
+    for row in ws.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = wrap
+
+    # kolombreedtes (dagblokken)
+    ws.column_dimensions['A'].width = 12  # week
+
+    for col in ws.iter_cols(min_col=2):
+        ws.column_dimensions[col[0].column_letter].width = 22
+
+    # rijhoogte (belangrijk voor leesbaarheid)
+    for row in ws.iter_rows(min_row=2):
+        ws.row_dimensions[row[0].row].height = 90
+
+    # timestamp linksboven
+    now = now_naive_in_tz(tz_str)
+    ws.cell(row=1, column=1).value = f"{now.strftime('%d-%m %H:%M')}"
+
+
 def load_afgeschermd_overrides_from_dropbox(debug=False):
     overrides = {}
     warnings = []
@@ -1145,12 +1235,14 @@ def make_excel(df_bar, df_ck, annotations,
     
     df_activities = pd.DataFrame()
     
-    if use_activities:
-        activities_url = build_activities_url(ACTIVITIES_DAYS_AHEAD, DEFAULT_CLIENT_ID)
-        activities_json = http_get_json(activities_url)
-    
-        df_activities = normalize_activities(activities_json, TZ)
-        df_activities = filter_from_current_week(df_activities, TZ)
+    df_activities = pd.DataFrame()
+
+if use_activities or add_activities_sheet:
+    activities_url = build_activities_url(ACTIVITIES_DAYS_AHEAD, DEFAULT_CLIENT_ID)
+    activities_json = http_get_json(activities_url)
+
+    df_activities = normalize_activities(activities_json, TZ)
+    df_activities = filter_from_current_week(df_activities, TZ)
     
     
     # 🔹 NIEUW: custom slots integreren
@@ -1221,6 +1313,14 @@ def make_excel(df_bar, df_ck, annotations,
     matrix_bar = prune_empty_subrows(matrix_bar)
     matrix_ck  = prune_empty_subrows(matrix_ck)
 
+    matrix_activities_calendar = None
+
+    if add_activities_sheet and not df_activities.empty:
+        matrix_activities_calendar = build_activities_calendar_matrix(
+            df_activities,
+            WEEK_LABEL
+        )
+
     # Schrijf naar Excel en verwijder de 'Regel'-kolom (kolom D)
     bio = io.BytesIO()
     with pd.ExcelWriter(bio, engine="openpyxl") as writer:
@@ -1235,8 +1335,19 @@ def make_excel(df_bar, df_ck, annotations,
         ws_ck = writer.sheets["CommissieKamer"]
         ws_ck.delete_cols(4)
         format_sheet(ws_ck, matrix_ck, merged_slots, TZ)
+        
+        # 🆕 Activiteiten Kalender
+        if matrix_activities_calendar is not None:
 
-    bio.seek(0)
+            sheet_name = "Activiteiten"
+        
+            matrix_activities_calendar.to_excel(writer, sheet_name=sheet_name)
+        
+            ws_act = writer.sheets[sheet_name]
+        
+            format_activities_calendar_sheet(ws_act, matrix_activities_calendar, TZ)
+                
+        bio.seek(0)
     return bio, warnings_total
 
 # =========================
@@ -1247,7 +1358,10 @@ st.markdown("<h1 style='text-align:center;margin-bottom:0'>CKC Rooster generator
 st.markdown(f"<h5 style='text-align:center;margin-top:0.25rem;color:#666'>versie {__version__}</h5>", unsafe_allow_html=True)
 st.caption("Sportlink → Excel · vaste instellingen (Europe/Amsterdam), weekoffset=-1, gefilterd vanaf huidige week")
 
-
+add_activities_sheet = st.checkbox(
+    "Toon activiteiten kalender",
+    value=True
+)
 use_dropbox = st.checkbox("Handmatige input via Dropbox meenemen", value=True)
 use_matches = st.checkbox("Wedstrijdinfo toevoegen", value=True)
 use_overrides = st.checkbox("Gebruik Afgeschermd overrides", value=True)
