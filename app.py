@@ -27,7 +27,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "3.0.0"
+__version__ = "3.0.1"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -1231,124 +1231,125 @@ def read_manual_text_from_dropbox(timeout: int = 30) -> str:
 def make_excel(df_bar, df_ck, annotations,
                use_matches=True,
                use_overrides=True,
-               use_activities=True):    
+               use_activities=True, 
+                add_activities_sheet=True):    
     
     df_activities = pd.DataFrame()
     
-    df_activities = pd.DataFrame()
-
-if use_activities or add_activities_sheet:
-    activities_url = build_activities_url(ACTIVITIES_DAYS_AHEAD, DEFAULT_CLIENT_ID)
-    activities_json = http_get_json(activities_url)
-
-    df_activities = normalize_activities(activities_json, TZ)
-    df_activities = filter_from_current_week(df_activities, TZ)
     
+
+    if use_activities or add_activities_sheet:
+        activities_url = build_activities_url(ACTIVITIES_DAYS_AHEAD, DEFAULT_CLIENT_ID)
+        activities_json = http_get_json(activities_url)
     
-    # 🔹 NIEUW: custom slots integreren
-    merged_slots, slot_warnings = merge_custom_slots_into_defaults(
-        [df_bar, df_ck],
-        DEFAULT_SLOTS,
-        df_activities if use_activities else None
-    )
-    
-    activities_index = build_activities_index(df_activities) if not df_activities.empty else {}    
-    
-    # Weekrange bepalen: uit data + huidige week + annotaties
-    def compute_weeks(df_list):
-        pairs = set()
-        for df in df_list:
-            if df is None or df.empty: continue
-            for y, w in zip(df["ISO_Year"], df["Week"]):
-                pairs.add((int(y), int(w)))
-        now = now_naive_in_tz(TZ); iso = now.isocalendar()
-        pairs.add((int(iso.year), int(iso.week)))
-        pairs |= {(a["iso_year"], a["iso_week"]) for a in annotations}
-        pairs = sorted(pairs)
-        wmondays = {p: pd.Timestamp.fromisocalendar(p[0], p[1], 1) for p in pairs}
-        return pairs, wmondays
-
-    weeks_pairs, week_mondays = compute_weeks([df_bar, df_ck])
-
-    # Lege matrixen opzetten
-    def build_empty(slots, subset):
-        return build_empty_matrix(slots, TZ, subset, 4, WEEK_LABEL, weeks_pairs, week_mondays)
-
-    days_subset_ck = ["Zaterdag"] if SAT_ONLY_CK else None
-    matrix_bar = build_empty(merged_slots, None)
-    matrix_ck  = build_empty(merged_slots, days_subset_ck)
-
-    # Vullen: namen (overlap + warnings)
-    warn_bar = fill_names(matrix_bar, df_bar, merged_slots, WEEK_LABEL)
-    warn_ck  = fill_names(matrix_ck,  df_ck,  merged_slots, WEEK_LABEL)
-    warnings_total = warn_bar + warn_ck + slot_warnings
-
-    # Overrides toepassen
-    if use_overrides:
-        overrides = load_afgeschermd_overrides_from_dropbox(debug_fetch)
-    
-        apply_afgeschermd_overrides(matrix_bar, overrides, "bar", WEEK_LABEL, debug_fetch)
-        apply_afgeschermd_overrides(matrix_ck,  overrides, "ck",  WEEK_LABEL, debug_fetch)
-
-    # Vullen: handmatig
-    fill_manual(matrix_bar, annotations, merged_slots, WEEK_LABEL)
-    fill_manual(matrix_ck,  annotations, merged_slots, WEEK_LABEL)
-
-    # Vullen: wedstrijden
-    if use_matches:
-        program_url = build_program_url(PROGRAM_DAYS_AHEAD, DEFAULT_CLIENT_ID, PROGRAM_FIELDS,
-                                        eigenwedstrijden="JA", thuis="JA", uit="NEE",
-                                        gebruiklokaleteamgegevens="NEE")
-        program_json = http_get_json(program_url)
-        df_program = normalize_program(program_json, TZ)
-        df_program = filter_from_current_week(df_program, TZ)
-        match_index = build_match_index_for_overlap(df_program)
-        fill_matches(matrix_bar, match_index, WEEK_LABEL, merged_slots, activities_index)
-        fill_matches(matrix_ck,  match_index, WEEK_LABEL, merged_slots, activities_index)
-    
-    
-    
-    
-    # Prune: verwijder subregels die volledig leeg zijn, maar laat 'Namen' altijd staan
-    matrix_bar = prune_empty_subrows(matrix_bar)
-    matrix_ck  = prune_empty_subrows(matrix_ck)
-
-    matrix_activities_calendar = None
-
-    if add_activities_sheet and not df_activities.empty:
-        matrix_activities_calendar = build_activities_calendar_matrix(
-            df_activities,
-            WEEK_LABEL
+        df_activities = normalize_activities(activities_json, TZ)
+        df_activities = filter_from_current_week(df_activities, TZ)
+        
+        
+        # 🔹 NIEUW: custom slots integreren
+        merged_slots, slot_warnings = merge_custom_slots_into_defaults(
+            [df_bar, df_ck],
+            DEFAULT_SLOTS,
+            df_activities if use_activities else None
         )
-
-    # Schrijf naar Excel en verwijder de 'Regel'-kolom (kolom D)
-    bio = io.BytesIO()
-    with pd.ExcelWriter(bio, engine="openpyxl") as writer:
-        # BarRooster
-        matrix_bar.to_excel(writer, sheet_name="BarRooster")
-        ws_bar = writer.sheets["BarRooster"]
-        ws_bar.delete_cols(4)  # kolom D
-        format_sheet(ws_bar, matrix_bar, merged_slots, TZ)
-
-        # CommissieKamer
-        matrix_ck.to_excel(writer, sheet_name="CommissieKamer")
-        ws_ck = writer.sheets["CommissieKamer"]
-        ws_ck.delete_cols(4)
-        format_sheet(ws_ck, matrix_ck, merged_slots, TZ)
         
-        # 🆕 Activiteiten Kalender
-        if matrix_activities_calendar is not None:
-
-            sheet_name = "Activiteiten"
+        activities_index = build_activities_index(df_activities) if not df_activities.empty else {}    
         
-            matrix_activities_calendar.to_excel(writer, sheet_name=sheet_name)
+        # Weekrange bepalen: uit data + huidige week + annotaties
+        def compute_weeks(df_list):
+            pairs = set()
+            for df in df_list:
+                if df is None or df.empty: continue
+                for y, w in zip(df["ISO_Year"], df["Week"]):
+                    pairs.add((int(y), int(w)))
+            now = now_naive_in_tz(TZ); iso = now.isocalendar()
+            pairs.add((int(iso.year), int(iso.week)))
+            pairs |= {(a["iso_year"], a["iso_week"]) for a in annotations}
+            pairs = sorted(pairs)
+            wmondays = {p: pd.Timestamp.fromisocalendar(p[0], p[1], 1) for p in pairs}
+            return pairs, wmondays
+    
+        weeks_pairs, week_mondays = compute_weeks([df_bar, df_ck])
+    
+        # Lege matrixen opzetten
+        def build_empty(slots, subset):
+            return build_empty_matrix(slots, TZ, subset, 4, WEEK_LABEL, weeks_pairs, week_mondays)
+    
+        days_subset_ck = ["Zaterdag"] if SAT_ONLY_CK else None
+        matrix_bar = build_empty(merged_slots, None)
+        matrix_ck  = build_empty(merged_slots, days_subset_ck)
+    
+        # Vullen: namen (overlap + warnings)
+        warn_bar = fill_names(matrix_bar, df_bar, merged_slots, WEEK_LABEL)
+        warn_ck  = fill_names(matrix_ck,  df_ck,  merged_slots, WEEK_LABEL)
+        warnings_total = warn_bar + warn_ck + slot_warnings
+    
+        # Overrides toepassen
+        if use_overrides:
+            overrides = load_afgeschermd_overrides_from_dropbox(debug_fetch)
         
-            ws_act = writer.sheets[sheet_name]
+            apply_afgeschermd_overrides(matrix_bar, overrides, "bar", WEEK_LABEL, debug_fetch)
+            apply_afgeschermd_overrides(matrix_ck,  overrides, "ck",  WEEK_LABEL, debug_fetch)
+    
+        # Vullen: handmatig
+        fill_manual(matrix_bar, annotations, merged_slots, WEEK_LABEL)
+        fill_manual(matrix_ck,  annotations, merged_slots, WEEK_LABEL)
+    
+        # Vullen: wedstrijden
+        if use_matches:
+            program_url = build_program_url(PROGRAM_DAYS_AHEAD, DEFAULT_CLIENT_ID, PROGRAM_FIELDS,
+                                            eigenwedstrijden="JA", thuis="JA", uit="NEE",
+                                            gebruiklokaleteamgegevens="NEE")
+            program_json = http_get_json(program_url)
+            df_program = normalize_program(program_json, TZ)
+            df_program = filter_from_current_week(df_program, TZ)
+            match_index = build_match_index_for_overlap(df_program)
+            fill_matches(matrix_bar, match_index, WEEK_LABEL, merged_slots, activities_index)
+            fill_matches(matrix_ck,  match_index, WEEK_LABEL, merged_slots, activities_index)
         
-            format_activities_calendar_sheet(ws_act, matrix_activities_calendar, TZ)
-                
-        bio.seek(0)
-    return bio, warnings_total
+        
+        
+        
+        # Prune: verwijder subregels die volledig leeg zijn, maar laat 'Namen' altijd staan
+        matrix_bar = prune_empty_subrows(matrix_bar)
+        matrix_ck  = prune_empty_subrows(matrix_ck)
+    
+        matrix_activities_calendar = None
+    
+        if add_activities_sheet and not df_activities.empty:
+            matrix_activities_calendar = build_activities_calendar_matrix(
+                df_activities,
+                WEEK_LABEL
+            )
+    
+        # Schrijf naar Excel en verwijder de 'Regel'-kolom (kolom D)
+        bio = io.BytesIO()
+        with pd.ExcelWriter(bio, engine="openpyxl") as writer:
+            # BarRooster
+            matrix_bar.to_excel(writer, sheet_name="BarRooster")
+            ws_bar = writer.sheets["BarRooster"]
+            ws_bar.delete_cols(4)  # kolom D
+            format_sheet(ws_bar, matrix_bar, merged_slots, TZ)
+    
+            # CommissieKamer
+            matrix_ck.to_excel(writer, sheet_name="CommissieKamer")
+            ws_ck = writer.sheets["CommissieKamer"]
+            ws_ck.delete_cols(4)
+            format_sheet(ws_ck, matrix_ck, merged_slots, TZ)
+            
+            # 🆕 Activiteiten Kalender
+            if matrix_activities_calendar is not None:
+    
+                sheet_name = "Activiteiten"
+            
+                matrix_activities_calendar.to_excel(writer, sheet_name=sheet_name)
+            
+                ws_act = writer.sheets[sheet_name]
+            
+                format_activities_calendar_sheet(ws_act, matrix_activities_calendar, TZ)
+                    
+            bio.seek(0)
+        return bio, warnings_total
 
 # =========================
 # UI (simpel)
@@ -1409,7 +1410,8 @@ if st.button("Genereer rooster", use_container_width=True):
                 annotations,
                 use_matches=use_matches,
                 use_overrides=use_overrides,
-                use_activities=use_activities
+                use_activities=use_activities,
+                add_activities_sheet=add_activities_sheet
             )
 
 
