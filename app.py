@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*--
 import io
 import warnings
 from typing import List, Dict, Tuple, Optional
