@@ -27,7 +27,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "3.0.2"
+__version__ = "3.0.3"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -81,6 +81,13 @@ DAY_COLORS = {
     "Maandag":"FFDDEBF7","Dinsdag":"FFE2EFDA","Woensdag":"FFFFF2CC",
     "Donderdag":"FFFCE4D6","Vrijdag":"FFE7E6E6","Zaterdag":"FFE4DFEC","Zondag":"FFF8CBAD"
 }
+WEEK_COLORS = [
+    "D9E1F2",  # licht blauw
+    "E2EFDA",  # licht groen
+    "FCE4D6",  # licht oranje
+    "EAD1DC",  # licht paars
+    "FFF2CC",  # licht geel
+]
 
 # Shifts per dag: (Tijd-van, Tijd-tot)
 DEFAULT_SLOTS: Dict[str, List[Tuple[str, str]]] = {
@@ -160,39 +167,60 @@ def build_activities_calendar_matrix(df_activities: pd.DataFrame,
     return matrix
 
 def format_activities_calendar_sheet(ws, matrix: pd.DataFrame, tz_str: str):
-    from openpyxl.styles import Font, Alignment
+    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
     bold = Font(bold=True)
-    wrap = Alignment(wrap_text=True, vertical="top")
+    center = Alignment(horizontal="center", vertical="center")
+    wrap_top = Alignment(wrap_text=True, vertical="top")
 
-    # headers
-    for cell in ws[1]:
+    thin = Side(style="thin", color="999999")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    # 🔹 HEADER (dagen)
+    header_fill = PatternFill(start_color="BDD7EE", end_color="BDD7EE", fill_type="solid")
+
+    for col_idx, cell in enumerate(ws[1], start=1):
         cell.font = bold
-        cell.alignment = Alignment(horizontal="center")
+        cell.alignment = center
+        cell.fill = header_fill
+        cell.border = border
 
-    # week kolom bold
-    for row in ws.iter_rows(min_row=2):
-        row[0].font = bold
-
-    # alle cellen wrap
-    for row in ws.iter_rows(min_row=2):
-        for cell in row:
-            cell.alignment = wrap
-
-    # kolombreedtes (dagblokken)
+    # 🔹 KOLOMBREEDTES
     ws.column_dimensions['A'].width = 12  # week
 
     for col in ws.iter_cols(min_col=2):
-        ws.column_dimensions[col[0].column_letter].width = 22
+        ws.column_dimensions[col[0].column_letter].width = 24
 
-    # rijhoogte (belangrijk voor leesbaarheid)
-    for row in ws.iter_rows(min_row=2):
-        ws.row_dimensions[row[0].row].height = 90
+    # 🔹 RIJEN (per week)
+    for r_idx, row in enumerate(ws.iter_rows(min_row=2), start=0):
 
-    # timestamp linksboven
+        color = WEEK_COLORS[r_idx % len(WEEK_COLORS)]
+        fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
+
+        for c_idx, cell in enumerate(row):
+
+            # 🔹 week kolom (eerste kolom)
+            if c_idx == 0:
+                cell.font = bold
+                cell.fill = fill
+                cell.alignment = center
+            else:
+                cell.alignment = wrap_top
+
+            cell.border = border
+
+            # 🔹 dag + datum bold maken (eerste regel in cel)
+            if isinstance(cell.value, str) and "\n" in cell.value:
+                lines = cell.value.split("\n")
+                lines[0] = f"{lines[0]}"  # placeholder (Excel rich text lastig)
+                cell.value = "\n".join(lines)
+
+        # 🔹 rijhoogte
+        ws.row_dimensions[row[0].row].height = 95
+
+    # 🔹 timestamp linksboven
     now = now_naive_in_tz(tz_str)
-    ws.cell(row=1, column=1).value = f"{now.strftime('%d-%m %H:%M')}"
-
+    ws.cell(row=1, column=1).value = now.strftime("%d-%m %H:%M")
 
 def load_afgeschermd_overrides_from_dropbox(debug=False):
     overrides = {}
