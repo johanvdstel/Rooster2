@@ -27,7 +27,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "3.1.0"
+__version__ = "3.1.1"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -1358,9 +1358,8 @@ def make_excel(df_bar, df_ck, annotations,
     
         if add_activities_sheet and not df_activities.empty:
             matrix_activities_calendar = build_activities_calendar_matrix(
-                df_activities,
-                WEEK_LABEL
-            )
+                df_activities
+)
     
         # Schrijf naar Excel en verwijder de 'Regel'-kolom (kolom D)
         bio = io.BytesIO()
