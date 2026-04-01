@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*--
 # ===== versie =======
-__version__ = "3.3.2"
+__version__ = "3.3.3"
 # ====================
 
 import io
@@ -173,11 +173,12 @@ def format_activities_calendar_sheet(ws, df, TZ, activities_weeks):
     import pandas as pd
     from datetime import timedelta
 
+    # 🔹 Bevries headerkolom en eerste rij
     ws.freeze_panes = "B2"
-    
+
+    # 🔹 Standaard zwarte borders
     thin = Side(style="thin", color="000000")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
-    
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row,
                             min_col=1, max_col=ws.max_column):
         for cell in row:
@@ -190,7 +191,7 @@ def format_activities_calendar_sheet(ws, df, TZ, activities_weeks):
     now = now_naive_in_tz(TZ)
     ts_cell = ws.cell(row=1, column=1)
     ts_cell.value = now.strftime("%d %b %H:%M")
-    ts_cell.font = Font(color="888888")
+    ts_cell.font = Font(color="888888")  # grijs
 
     # 🔹 Kolombreedtes
     ws.column_dimensions["A"].width = 14
@@ -217,18 +218,18 @@ def format_activities_calendar_sheet(ws, df, TZ, activities_weeks):
         cell.fill = fill
 
         # 🔹 Bereken maandag van de week
-        monday = pd.to_datetime(f'{y}-W{w-1}-1', format="%Y-W%W-%w")  # python week start maandag
+        monday = pd.to_datetime(f'{y}-W{w-1}-1', format="%Y-W%W-%w")
 
-        # 🔹 Header: dag + datum
+        # 🔹 Header: dag + datum, groter en dikker lettertype, gecentreerd
         for col_index, dag in enumerate(DAYS_NL, start=2):
             date = monday + timedelta(days=col_index - 2)
             c = ws.cell(row=header_row, column=col_index)
             c.value = f"{dag} ({date:%d-%b})"
-            c.font = Font(bold=True, size=13)
+            c.font = Font(bold=True, size=14)
             c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             c.fill = fill
 
-            # Data cel styling
+            # 🔹 Data cel styling
             d = ws.cell(row=data_row, column=col_index)
             d.alignment = Alignment(vertical="top", wrap_text=True)
 
@@ -237,6 +238,16 @@ def format_activities_calendar_sheet(ws, df, TZ, activities_weeks):
         ws.row_dimensions[data_row].height = 80
 
         row += 2
+
+    # 🔹 Extra: verwijder lege kolom B als die er nog staat (punt 1)
+    if ws.column_dimensions.get("B") and all(ws.cell(r, 2).value is None for r in range(1, ws.max_row + 1)):
+        ws.delete_cols(2)
+
+    # 🔹 Herstel zwarte borders na mogelijk verwijderen kolom
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row,
+                            min_col=1, max_col=ws.max_column):
+        for cell in row:
+            cell.border = border
     
     
 def load_afgeschermd_overrides_from_dropbox(debug=False):
