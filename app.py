@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*--
 # ===== versie =======
-__version__ = "3.3.0"
+__version__ = "3.3.1"
 # ====================
 
 import io
@@ -168,7 +168,7 @@ def build_activities_calendar_matrix(df_activities: pd.DataFrame):
     return pd.DataFrame(rows, columns=columns)
 
 
-def format_activities_calendar_sheet(ws, df, TZ, weeks_pairs):
+def format_activities_calendar_sheet(ws, df, TZ, activities_weeks):
 
     from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
 
@@ -206,8 +206,8 @@ def format_activities_calendar_sheet(ws, df, TZ, weeks_pairs):
         data_row   = row + 1
 
         # ✅ Correct weeklabel
-        if week_index < len(weeks_pairs):
-            y, w = weeks_pairs[week_index]
+        if week_index < len(activities_weeks):
+            y, w = activities_weeks[week_index]
             week_label = f"{y}-W{w:02d}"
         else:
             week_label = ""
@@ -1389,8 +1389,13 @@ def make_excel(df_bar, df_ck, annotations,
         if add_activities_sheet and not df_activities.empty:
             matrix_activities_calendar = build_activities_calendar_matrix(
                 df_activities
-)
+            )
     
+        activities_weeks = sorted({
+            (int(y), int(w))
+            for y, w in zip(df_activities["ISO_Year"], df_activities["Week"])
+        }) if not df_activities.empty else []
+        
         # Schrijf naar Excel en verwijder de 'Regel'-kolom (kolom D)
         bio = io.BytesIO()
         with pd.ExcelWriter(bio, engine="openpyxl") as writer:
