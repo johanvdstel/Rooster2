@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*--
 # ===== versie =======
-__version__ = "3.4.2"
+__version__ = "3.4.3"
 # ====================
 
 import io
@@ -119,23 +119,35 @@ def build_activities_calendar_matrix(df_activities):
 
     df = df_activities.copy()
 
-    # 🔹 Zorg dat datum kolom bestaat en datetime is
-    df["date"] = pd.to_datetime(df["start"]).dt.date
+    # 🔹 Kolomnamen uit API
+    start_col = "Datum van"
+    end_col   = "Datum t/m"
 
-    # 🔹 Maak tekst per activiteit (tijd + naam)
-    df["text"] = df["start"].dt.strftime("%H:%M") + " " + df["name"]
+    if start_col not in df.columns:
+        raise ValueError(f"Kolom '{start_col}' niet gevonden in df_activities")
+
+    # 🔹 Parse datetime (werkt direct met jouw formaat)
+    df["start_dt"] = pd.to_datetime(df[start_col])
+    df["end_dt"]   = pd.to_datetime(df[end_col]) if end_col in df.columns else None
+
+    # 🔹 Datum en tekst
+    df["date"] = df["start_dt"].dt.date
+    df["text"] = df["start_dt"].dt.strftime("%H:%M") + " " + df.get("Naam", "")
+
+    # 🔹 Sorteer op tijd (belangrijk!)
+    df = df.sort_values("start_dt")
 
     # 🔹 Groepeer per dag
     grouped = df.groupby("date")["text"].apply(list)
 
-    # 🔹 Bepaal volledige datumbereik (BELANGRIJK voor 90 dagen!)
+    # 🔹 Volledig datumbereik (dus ook lege dagen → essentieel voor 90 dagen)
     all_dates = pd.date_range(
         start=min(grouped.index),
         end=max(grouped.index),
         freq="D"
     )
 
-    # 🔹 Maak matrix met alle dagen (ook lege)
+    # 🔹 Matrix bouwen met echte datetime kolommen
     matrix = pd.DataFrame(index=[0], columns=all_dates)
 
     for d in all_dates:
@@ -144,7 +156,7 @@ def build_activities_calendar_matrix(df_activities):
         else:
             matrix[d] = ""
 
-    # 🔹 Kolom A placeholder (wordt later weeklabel)
+    # 🔹 Kolom A voor weeklabels
     matrix.insert(0, "Week", "")
 
     return matrix
