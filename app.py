@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*--
 # ===== versie =======
-__version__ = "3.4.5"
+__version__ = "3.4.6"
 # ====================
 
 import io
@@ -142,11 +142,16 @@ def build_activities_calendar_matrix(df_activities):
     grouped = df.groupby("date")["text"].apply(list)
 
     # 🔹 Volledige datumrange (belangrijk voor 90 dagen!)
-    all_dates = pd.date_range(
-        start=min(grouped.index),
-        end=max(grouped.index),
-        freq="D"
-    )
+    first_date = min(grouped.index)
+    last_date  = max(grouped.index)
+    
+    # 🔹 naar maandag van eerste week
+    start = first_date - pd.Timedelta(days=first_date.weekday())
+    
+    # 🔹 naar zondag van laatste week
+    end = last_date + pd.Timedelta(days=(6 - last_date.weekday()))
+    
+    all_dates = pd.date_range(start=start, end=end, freq="D")
 
     # 🔹 Matrix met echte datetime kolommen
     matrix = pd.DataFrame(index=[0], columns=all_dates)
@@ -164,6 +169,9 @@ def build_activities_calendar_matrix(df_activities):
 
 
 def format_activities_calendar_sheet(ws, df, TZ):
+    import locale
+    locale.setlocale(locale.LC_TIME, "nl_NL.UTF-8")
+    
     import pandas as pd
     from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
     from openpyxl.utils import get_column_letter
