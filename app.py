@@ -1432,8 +1432,7 @@ def make_excel(df_bar, df_ck, annotations,
                 format_activities_calendar_sheet(
                     ws_act,
                     matrix_activities_calendar,
-                    TZ,
-                    weeks_pairs
+                    TZ
                 )
                     
             bio.seek(0)
