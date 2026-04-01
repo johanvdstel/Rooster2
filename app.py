@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*--
 # ===== versie =======
-__version__ = "3.3.3"
+__version__ = "3.4.0"
 # ====================
 
 import io
@@ -168,17 +168,15 @@ def build_activities_calendar_matrix(df_activities: pd.DataFrame):
     return pd.DataFrame(rows, columns=columns)
 
 
-def format_activities_calendar_sheet(ws, df, TZ, activities_weeks):
+def format_activities_calendar_sheet(ws, df, TZ):
     from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
     import pandas as pd
-    from datetime import timedelta
 
-    # 🔹 Bevries headerkolom en eerste rij
     ws.freeze_panes = "B2"
-
-    # 🔹 Standaard zwarte borders
+    
     thin = Side(style="thin", color="000000")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row,
                             min_col=1, max_col=ws.max_column):
         for cell in row:
@@ -187,7 +185,7 @@ def format_activities_calendar_sheet(ws, df, TZ, activities_weeks):
     max_row = ws.max_row
     max_col = ws.max_column
 
-    # 🔹 Timestamp in A1, grijs
+    # 🔹 Timestamp terug in A1 en grijzen
     now = now_naive_in_tz(TZ)
     ts_cell = ws.cell(row=1, column=1)
     ts_cell.value = now.strftime("%d %b %H:%M")
@@ -198,56 +196,57 @@ def format_activities_calendar_sheet(ws, df, TZ, activities_weeks):
     for col in range(2, max_col + 1):
         ws.column_dimensions[chr(64 + col)].width = 28
 
+    # 🔹 Automatisch weeks_pairs maken van df
+    df_dates = pd.to_datetime(df.columns[1:])  # neem alle kolomdatums, behalve kolom A
+    activities_weeks = sorted({(d.isocalendar().year, d.isocalendar().week) for d in df_dates})
+
     row = 2
-    DAYS_NL = ["Ma", "Di", "Wo", "Do", "Vr", "Za", "Zo"]
+    week_index = 0
 
-    for week_index, (y, w) in enumerate(activities_weeks):
+    while row <= max_row:
+
         header_row = row
-        data_row = row + 1
+        data_row   = row + 1
 
-        # 🔹 Weeklabel in kolom A
-        week_label = f"{y}-W{w:02d}"
+        # ✅ Correct weeklabel
+        if week_index < len(activities_weeks):
+            y, w = activities_weeks[week_index]
+            week_label = f"{y}-W{w:02d}"
+        else:
+            week_label = ""
+
+        # 🎨 zelfde wisselende kleuren als andere sheets
         color = WEEK_COLORS[week_index % len(WEEK_COLORS)]
         fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
 
-        ws.merge_cells(start_row=header_row, start_column=1, end_row=data_row, end_column=1)
+        # 🔹 merge kolom A
+        ws.merge_cells(start_row=header_row, start_column=1,
+                       end_row=data_row, end_column=1)
+
         cell = ws.cell(row=header_row, column=1)
         cell.value = week_label
         cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal="center", vertical="center")
         cell.fill = fill
 
-        # 🔹 Bereken maandag van de week
-        monday = pd.to_datetime(f'{y}-W{w-1}-1', format="%Y-W%W-%w")
-
-        # 🔹 Header: dag + datum, groter en dikker lettertype, gecentreerd
-        for col_index, dag in enumerate(DAYS_NL, start=2):
-            date = monday + timedelta(days=col_index - 2)
-            c = ws.cell(row=header_row, column=col_index)
-            c.value = f"{dag} ({date:%d-%b})"
-            c.font = Font(bold=True, size=14)
+        # 🔹 header (dag + datum)
+        for col in range(2, max_col + 1):
+            c = ws.cell(row=header_row, column=col)
+            c.font = Font(bold=True, size=13)
             c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             c.fill = fill
 
-            # 🔹 Data cel styling
-            d = ws.cell(row=data_row, column=col_index)
-            d.alignment = Alignment(vertical="top", wrap_text=True)
+        # 🔹 data (activiteiten)
+        for col in range(2, max_col + 1):
+            c = ws.cell(row=data_row, column=col)
+            c.alignment = Alignment(vertical="top", wrap_text=True)
 
-        # 🔹 Rijhoogtes
+        # 🔹 rijhoogtes
         ws.row_dimensions[header_row].height = 24
         ws.row_dimensions[data_row].height = 80
 
         row += 2
-
-    # 🔹 Extra: verwijder lege kolom B als die er nog staat (punt 1)
-    if ws.column_dimensions.get("B") and all(ws.cell(r, 2).value is None for r in range(1, ws.max_row + 1)):
-        ws.delete_cols(2)
-
-    # 🔹 Herstel zwarte borders na mogelijk verwijderen kolom
-    for row in ws.iter_rows(min_row=2, max_row=ws.max_row,
-                            min_col=1, max_col=ws.max_column):
-        for cell in row:
-            cell.border = border
+        week_index += 1
     
     
 def load_afgeschermd_overrides_from_dropbox(debug=False):
