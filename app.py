@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*--
 # ===== versie =======
-__version__ = "3.3.1"
+__version__ = "3.3.2"
 # ====================
 
 import io
@@ -169,8 +169,9 @@ def build_activities_calendar_matrix(df_activities: pd.DataFrame):
 
 
 def format_activities_calendar_sheet(ws, df, TZ, activities_weeks):
-
     from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+    import pandas as pd
+    from datetime import timedelta
 
     ws.freeze_panes = "B2"
     
@@ -185,65 +186,57 @@ def format_activities_calendar_sheet(ws, df, TZ, activities_weeks):
     max_row = ws.max_row
     max_col = ws.max_column
 
-    # 🔹 Timestamp terug in A1 en grijzen
+    # 🔹 Timestamp in A1, grijs
     now = now_naive_in_tz(TZ)
-    ws.cell(row=1, column=1).value = now.strftime("%d %b %H:%M")
     ts_cell = ws.cell(row=1, column=1)
     ts_cell.value = now.strftime("%d %b %H:%M")
-    ts_cell.font = Font(color="888888")  # grijs
-    
+    ts_cell.font = Font(color="888888")
+
     # 🔹 Kolombreedtes
     ws.column_dimensions["A"].width = 14
     for col in range(2, max_col + 1):
         ws.column_dimensions[chr(64 + col)].width = 28
 
     row = 2
-    week_index = 0
+    DAYS_NL = ["Ma", "Di", "Wo", "Do", "Vr", "Za", "Zo"]
 
-    while row <= max_row:
-
+    for week_index, (y, w) in enumerate(activities_weeks):
         header_row = row
-        data_row   = row + 1
+        data_row = row + 1
 
-        # ✅ Correct weeklabel
-        if week_index < len(activities_weeks):
-            y, w = activities_weeks[week_index]
-            week_label = f"{y}-W{w:02d}"
-        else:
-            week_label = ""
-
-        # 🎨 zelfde wisselende kleuren als andere sheets
+        # 🔹 Weeklabel in kolom A
+        week_label = f"{y}-W{w:02d}"
         color = WEEK_COLORS[week_index % len(WEEK_COLORS)]
         fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
 
-        # 🔹 merge kolom A
-        ws.merge_cells(start_row=header_row, start_column=1,
-                       end_row=data_row, end_column=1)
-
+        ws.merge_cells(start_row=header_row, start_column=1, end_row=data_row, end_column=1)
         cell = ws.cell(row=header_row, column=1)
         cell.value = week_label
         cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal="center", vertical="center")
         cell.fill = fill
 
-        # 🔹 header (dag + datum)
-        for col in range(2, max_col + 1):
-            c = ws.cell(row=header_row, column=col)
+        # 🔹 Bereken maandag van de week
+        monday = pd.to_datetime(f'{y}-W{w-1}-1', format="%Y-W%W-%w")  # python week start maandag
+
+        # 🔹 Header: dag + datum
+        for col_index, dag in enumerate(DAYS_NL, start=2):
+            date = monday + timedelta(days=col_index - 2)
+            c = ws.cell(row=header_row, column=col_index)
+            c.value = f"{dag} ({date:%d-%b})"
             c.font = Font(bold=True, size=13)
             c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             c.fill = fill
 
-        # 🔹 data (activiteiten)
-        for col in range(2, max_col + 1):
-            c = ws.cell(row=data_row, column=col)
-            c.alignment = Alignment(vertical="top", wrap_text=True)
+            # Data cel styling
+            d = ws.cell(row=data_row, column=col_index)
+            d.alignment = Alignment(vertical="top", wrap_text=True)
 
-        # 🔹 rijhoogtes
+        # 🔹 Rijhoogtes
         ws.row_dimensions[header_row].height = 24
         ws.row_dimensions[data_row].height = 80
 
         row += 2
-        week_index += 1
     
     
 def load_afgeschermd_overrides_from_dropbox(debug=False):
