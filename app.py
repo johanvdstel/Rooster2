@@ -111,6 +111,7 @@ DROPBOX_OVERRIDE_URL = "https://www.dropbox.com/scl/fi/w1711x6bzna5lniz0cvkw/Afg
 
 # ---------- helpers ----------
 # ------ build activities calendar -------
+
 def build_activities_calendar_matrix(df_activities):
     import pandas as pd
 
@@ -1391,10 +1392,11 @@ def make_excel(df_bar, df_ck, annotations,
         # Prune: verwijder subregels die volledig leeg zijn, maar laat 'Namen' altijd staan
         matrix_bar = prune_empty_subrows(matrix_bar)
         matrix_ck  = prune_empty_subrows(matrix_ck)
-    
+        print(df_activities.columns.tolist())
         matrix_activities_calendar = None
     
         if add_activities_sheet and not df_activities.empty:
+            
             matrix_activities_calendar = build_activities_calendar_matrix(
                 df_activities
             )
