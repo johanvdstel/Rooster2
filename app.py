@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*--
-# ===== versie =======
-__version__ = "3.4.6"
-# ====================
+# ===== versie =======================
+#
+__version__ = "3.4.7"
+# fix styling problems in activities 
+#
+# ====================================
 
 import io
 import warnings
@@ -180,11 +183,11 @@ def format_activities_calendar_sheet(ws, df, TZ):
 
     max_col = ws.max_column
 
-    # 🔹 Timestamp
+    # 🔹 Timestamp in NL-stijl, gelijk aan andere sheets
     now = now_naive_in_tz(TZ)
     ts_cell = ws.cell(row=1, column=1)
-    ts_cell.value = now.strftime("%d %b %H:%M")
-    ts_cell.font = Font(color="888888")
+    ts_cell.value = f"{now.day} {month_short_nl(now.month)} {now.strftime('%H:%M')}"
+    ts_cell.font = Font(italic=True, color="FF666666")
 
     # 🔹 Kolombreedtes
     ws.column_dimensions["A"].width = 14
@@ -234,13 +237,12 @@ def format_activities_calendar_sheet(ws, df, TZ):
                 break
 
             d = pd.Timestamp(date_columns[col_index])
-
             col = 2 + i
 
-            # Header
+            # Header: alleen dagnaam
             c = ws.cell(row=header_row, column=col)
-            c.value = d.strftime("%a (%d-%b)")
-            c.font = Font(bold=True, size=14)
+            c.value = DAYS_NL[d.weekday()]
+            c.font = Font(bold=True, size=15)
             c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             c.fill = fill
             c.border = border
@@ -254,11 +256,11 @@ def format_activities_calendar_sheet(ws, df, TZ):
 
             col_index += 1
 
-        ws.row_dimensions[header_row].height = 24
+        ws.row_dimensions[header_row].height = 26
         ws.row_dimensions[data_row].height = 80
 
         row += 2
-        week_index += 1    
+        week_index += 1
     
 def load_afgeschermd_overrides_from_dropbox(debug=False):
     overrides = {}
@@ -1431,7 +1433,12 @@ def make_excel(df_bar, df_ck, annotations,
     
                 sheet_name = "Activiteiten"
             
-                matrix_activities_calendar.to_excel(writer, sheet_name=sheet_name, index=False)
+                matrix_activities_calendar.to_excel(
+                    writer,
+                    sheet_name=sheet_name,
+                    index=False,
+                    header=False
+                )
             
                 ws_act = writer.sheets[sheet_name]
             
