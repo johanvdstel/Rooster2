@@ -27,7 +27,7 @@ def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
 # ===== versie =====
-__version__ = "3.0.3"
+__version__ = "3.1.0"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -109,119 +109,121 @@ DROPBOX_OVERRIDE_URL = "https://www.dropbox.com/scl/fi/w1711x6bzna5lniz0cvkw/Afg
 
 # ---------- helpers ----------
 # ------ build activities calendar -------
-def build_activities_calendar_matrix(df_activities: pd.DataFrame,
-                                     week_label_style: str):
+def build_activities_calendar_matrix(df_activities: pd.DataFrame):
 
     if df_activities.empty:
         return pd.DataFrame()
 
     df = df_activities.copy()
+    df = df.sort_values(["ISO_Year", "Week", "Datum", "Tijd"])
 
-    # sortering
-    df = df.sort_values(["ISO_Year", "Week", "Date", "Tijd"])
-
-    # unieke weken
     weeks = sorted({
         (int(y), int(w))
         for y, w in zip(df["ISO_Year"], df["Week"])
     })
 
-    # helper
-    def week_label(pair):
-        y, w = pair
-        return f"{y}-W{w:02d}" if week_label_style == "iso" else f"Week {w}"
+    rows = []
 
-    # matrix structuur
-    matrix = pd.DataFrame(
-        "",
-        index=[week_label(w) for w in weeks],
-        columns=DAYS_NL
-    )
-
-    # 🔑 groepeer per dag
     grouped = df.groupby(["ISO_Year", "Week", "Dag"])
 
-    for (y, w, dag), group in grouped:
+    for (y, w) in weeks:
 
-        col = dag
-        row = week_label((int(y), int(w)))
+        # 🔹 HEADER RIJ (datums per dag)
+        header_row = [""]  # kolom A leeg
 
-        # datum bepalen (eerste entry)
-        date = group.iloc[0]["Date"]
-        date_str = date.strftime("%d-%m")
+        # 🔹 DATA RIJ (activiteiten)
+        data_row = [f"{y}-W{w:02d}"]
 
-        # header in cel
-        lines = [f"{dag[:2]} {date_str}"]
+        for dag in DAYS_NL:
 
-        # activiteiten op tijd
-        for _, r in group.sort_values("Tijd").iterrows():
-            tijd = r["Tijd"]
-            naam = r["Activiteit"]
-        
-            if r.get("IsAllDay", False):
-                lines.append(f"{naam}")
+            group = grouped.get_group((y, w, dag)) if (y, w, dag) in grouped.groups else None
+
+            if group is not None:
+                date = group.iloc[0]["Datum"]
+                header_row.append(f"{dag} ({date.strftime('%d-%b')})")
+
+                lines = []
+                for _, r in group.sort_values("Tijd").iterrows():
+                    tijd = r["Tijd"]
+                    naam = r["Activiteit"]
+
+                    if r.get("IsAllDay", False):
+                        lines.append(f"{naam}")
+                    else:
+                        lines.append(f"{tijd} {naam}")
+
+                data_row.append("\n".join(lines))
+
             else:
-                lines.append(f"{tijd} {naam}")
-                matrix.loc[row, col] = "\n".join(lines)
-        
-    return matrix
+                header_row.append(dag)
+                data_row.append("")
+
+        rows.append(header_row)
+        rows.append(data_row)
+
+    columns = ["Week"] + DAYS_NL
+    return pd.DataFrame(rows, columns=columns)
 
 def format_activities_calendar_sheet(ws, matrix: pd.DataFrame, tz_str: str):
     from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
     bold = Font(bold=True)
+    grey = Font(color="888888")
+
     center = Alignment(horizontal="center", vertical="center")
-    wrap_top = Alignment(wrap_text=True, vertical="top")
+    wrap = Alignment(wrap_text=True, vertical="top")
 
     thin = Side(style="thin", color="999999")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    # 🔹 HEADER (dagen)
-    header_fill = PatternFill(start_color="BDD7EE", end_color="BDD7EE", fill_type="solid")
+    WEEK_COLORS = ["D9E1F2", "E2EFDA", "FCE4D6", "EAD1DC", "FFF2CC"]
 
-    for col_idx, cell in enumerate(ws[1], start=1):
-        cell.font = bold
-        cell.alignment = center
-        cell.fill = header_fill
-        cell.border = border
-
-    # 🔹 KOLOMBREEDTES
-    ws.column_dimensions['A'].width = 12  # week
-
+    # 🔹 kolombreedtes
+    ws.column_dimensions['A'].width = 14
     for col in ws.iter_cols(min_col=2):
-        ws.column_dimensions[col[0].column_letter].width = 24
+        ws.column_dimensions[col[0].column_letter].width = 26
 
-    # 🔹 RIJEN (per week)
-    for r_idx, row in enumerate(ws.iter_rows(min_row=2), start=0):
+    # 🔹 rijen verwerken (per week 2 rijen)
+    for r_idx in range(2, ws.max_row + 1):
 
-        color = WEEK_COLORS[r_idx % len(WEEK_COLORS)]
+        row = ws[r_idx]
+        is_header_row = (r_idx % 2 == 0)  # eerste rij van weekblok
+
+        week_index = (r_idx - 2) // 2
+        color = WEEK_COLORS[week_index % len(WEEK_COLORS)]
         fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
 
         for c_idx, cell in enumerate(row):
 
-            # 🔹 week kolom (eerste kolom)
-            if c_idx == 0:
-                cell.font = bold
-                cell.fill = fill
-                cell.alignment = center
-            else:
-                cell.alignment = wrap_top
-
             cell.border = border
 
-            # 🔹 dag + datum bold maken (eerste regel in cel)
-            if isinstance(cell.value, str) and "\n" in cell.value:
-                lines = cell.value.split("\n")
-                lines[0] = f"{lines[0]}"  # placeholder (Excel rich text lastig)
-                cell.value = "\n".join(lines)
+            if is_header_row:
+                # 🔹 header rij (dag + datum)
+                cell.fill = fill
+                cell.font = bold
+                cell.alignment = center
 
-        # 🔹 rijhoogte
-        ws.row_dimensions[row[0].row].height = 95
+            else:
+                # 🔹 data rij
+                cell.alignment = wrap
 
-    # 🔹 timestamp linksboven
+                if c_idx == 0:
+                    cell.font = bold
+                    cell.alignment = center
+
+        # 🔹 rijhoogtes
+        if is_header_row:
+            ws.row_dimensions[r_idx].height = 28
+        else:
+            ws.row_dimensions[r_idx].height = 95
+
+    # 🔹 timestamp (A1)
     now = now_naive_in_tz(tz_str)
-    ws.cell(row=1, column=1).value = now.strftime("%d-%m %H:%M")
-
+    cell = ws.cell(row=1, column=1)
+    cell.value = now.strftime("%d-%m %H:%M")
+    cell.font = grey
+    
+    
 def load_afgeschermd_overrides_from_dropbox(debug=False):
     overrides = {}
     warnings = []
