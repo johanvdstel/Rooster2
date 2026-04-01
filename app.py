@@ -169,9 +169,6 @@ def build_activities_calendar_matrix(df_activities):
 
 
 def format_activities_calendar_sheet(ws, df, TZ):
-    import locale
-    locale.setlocale(locale.LC_TIME, "nl_NL.UTF-8")
-    
     import pandas as pd
     from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
     from openpyxl.utils import get_column_letter
