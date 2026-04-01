@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*--
 # ===== versie =====
-__version__ = "3.2.0"
-
+__version__ = "3.2.1"
+# ===================
 
 import io
 import warnings
@@ -124,59 +124,67 @@ def build_activities_calendar_matrix(df_activities: pd.DataFrame):
         for y, w in zip(df["ISO_Year"], df["Week"])
     })
 
-    rows = []
-
     grouped = df.groupby(["ISO_Year", "Week", "Dag"])
+
+    rows = []
 
     for (y, w) in weeks:
 
-        # 🔹 HEADER RIJ (datums per dag)
-        header_row = [""]  # kolom A leeg
-
-        # 🔹 DATA RIJ (activiteiten)
-        data_row = [""]
+        header_row = [""]   # kolom A (week)
+        data_row   = [""]
 
         for dag in DAYS_NL:
 
-            group = grouped.get_group((y, w, dag)) if (y, w, dag) in grouped.groups else None
+            if (y, w, dag) in grouped.groups:
+                group = grouped.get_group((y, w, dag))
 
-            if group is not None:
+                # datum
                 date = group.iloc[0]["Datum"]
+
+                # activiteiten met tijd
+                lines = []
+                for _, r in group.iterrows():
+                    tijd = r["Tijd"]
+                    naam = r["Activiteit"]
+                    lines.append(f"{tijd} {naam}")
+
+                cell_text = "\n".join(lines)
+
             else:
-                # fallback: bereken datum uit ISO week + dag index
                 from datetime import datetime
-                dag_index = DAYS_NL.index(dag) + 1  # maandag=1
+                dag_index = DAYS_NL.index(dag) + 1
                 date = datetime.fromisocalendar(y, w, dag_index)
-            
+                cell_text = ""
+
             header_row.append(f"{dag} ({date.strftime('%d-%b')})")
-            
+            data_row.append(cell_text)
+
         rows.append(header_row)
         rows.append(data_row)
 
-    columns = ["Week"] + DAYS_NL
+    # 🔥 GEEN "Week" kolom meer!
+    columns = [""] + DAYS_NL
+
     return pd.DataFrame(rows, columns=columns)
 
-def format_activities_calendar_sheet(ws, df, TZ):
+
+def format_activities_calendar_sheet(ws, df, TZ, weeks_pairs):
 
     from openpyxl.styles import Alignment, Font, PatternFill
-    from datetime import datetime
-
-    DAYS_NL_LOCAL = DAYS_NL  # gebruik jouw bestaande lijst
-
-    # 🎨 kleur (pas aan naar smaak / bar-CK stijl)
-    fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
 
     max_row = ws.max_row
     max_col = ws.max_column
 
+    # 🔹 Timestamp terug in A1
+    now = now_naive_in_tz(TZ)
+    ws.cell(row=1, column=1).value = now.strftime("%d %b %H:%M")
+
     # 🔹 Kolombreedtes
-    ws.column_dimensions["A"].width = 12
+    ws.column_dimensions["A"].width = 14
     for col in range(2, max_col + 1):
-        ws.column_dimensions[chr(64 + col)].width = 22
+        ws.column_dimensions[chr(64 + col)].width = 28
 
-    # 🔹 Loop per week (2 rijen tegelijk)
-    row = 2  # rij 1 = pandas header → overslaan
-
+    row = 2
     week_index = 0
 
     while row <= max_row:
@@ -184,52 +192,40 @@ def format_activities_calendar_sheet(ws, df, TZ):
         header_row = row
         data_row   = row + 1
 
-        # 🔸 1. Week bepalen uit header (ISO jaar/week reconstrueren)
-        # We halen datum uit eerste dagkolom (bijv. maandag)
-        first_day_cell = ws.cell(row=header_row, column=2).value
+        # ✅ Correct weeklabel
+        y, w = weeks_pairs[week_index]
+        week_label = f"{y}-W{w:02d}"
 
-        try:
-            # verwacht: "Maandag (01-Apr)"
-            date_str = first_day_cell.split("(")[1].strip(")")
-            date_obj = datetime.strptime(date_str, "%d-%b")
-            year = datetime.now().year  # fallback (kan je verfijnen)
-            # ISO week bepalen
-            iso = date_obj.replace(year=year).isocalendar()
-            week_label = f"{iso.year}-W{iso.week:02d}"
-        except:
-            week_label = f"Week {week_index+1}"
+        # 🎨 zelfde wisselende kleuren als andere sheets
+        color = WEEK_COLORS[week_index % len(WEEK_COLORS)]
+        fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
 
-        # 🔸 2. Merge kolom A (2 rijen)
+        # 🔹 merge kolom A
         ws.merge_cells(start_row=header_row, start_column=1,
                        end_row=data_row, end_column=1)
 
         cell = ws.cell(row=header_row, column=1)
         cell.value = week_label
-
-        # styling kolom A
-        cell.font = Font(bold=True, size=12)
+        cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal="center", vertical="center")
         cell.fill = fill
 
-        # 🔸 3. Header rij (dag + datum)
+        # 🔹 header (dag + datum)
         for col in range(2, max_col + 1):
             c = ws.cell(row=header_row, column=col)
-
             c.font = Font(bold=True)
             c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             c.fill = fill
 
-        # 🔸 4. Data rij (activiteiten)
+        # 🔹 data (activiteiten)
         for col in range(2, max_col + 1):
             c = ws.cell(row=data_row, column=col)
-
             c.alignment = Alignment(vertical="top", wrap_text=True)
 
-        # 🔸 5. Rijhoogtes (belangrijk voor leesbaarheid)
-        ws.row_dimensions[header_row].height = 22
-        ws.row_dimensions[data_row].height = 60
+        # 🔹 rijhoogtes
+        ws.row_dimensions[header_row].height = 24
+        ws.row_dimensions[data_row].height = 80
 
-        # volgende week
         row += 2
         week_index += 1
     
@@ -1395,7 +1391,12 @@ def make_excel(df_bar, df_ck, annotations,
             
                 ws_act = writer.sheets[sheet_name]
             
-                format_activities_calendar_sheet(ws_act, matrix_activities_calendar, TZ)
+                format_activities_calendar_sheet(
+                    ws_act,
+                    matrix_activities_calendar,
+                    TZ,
+                    weeks_pairs
+                )
                     
             bio.seek(0)
         return bio, warnings_total
