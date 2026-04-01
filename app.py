@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*--
+# ===== versie =====
+__version__ = "3.2.0"
+
+
 import io
 import warnings
 from typing import List, Dict, Tuple, Optional
@@ -26,8 +30,6 @@ def now_naive_in_tz(tz_str: str) -> pd.Timestamp:
 def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
     return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
-# ===== versie =====
-__version__ = "3.1.1"
 
 # ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
@@ -132,7 +134,7 @@ def build_activities_calendar_matrix(df_activities: pd.DataFrame):
         header_row = [""]  # kolom A leeg
 
         # 🔹 DATA RIJ (activiteiten)
-        data_row = [f"{y}-W{w:02d}"]
+        data_row = [""]
 
         for dag in DAYS_NL:
 
@@ -140,88 +142,96 @@ def build_activities_calendar_matrix(df_activities: pd.DataFrame):
 
             if group is not None:
                 date = group.iloc[0]["Datum"]
-                header_row.append(f"{dag} ({date.strftime('%d-%b')})")
-
-                lines = []
-                for _, r in group.sort_values("Tijd").iterrows():
-                    tijd = r["Tijd"]
-                    naam = r["Activiteit"]
-
-                    if r.get("IsAllDay", False):
-                        lines.append(f"{naam}")
-                    else:
-                        lines.append(f"{tijd} {naam}")
-
-                data_row.append("\n".join(lines))
-
             else:
-                header_row.append(dag)
-                data_row.append("")
-
+                # fallback: bereken datum uit ISO week + dag index
+                from datetime import datetime
+                dag_index = DAYS_NL.index(dag) + 1  # maandag=1
+                date = datetime.fromisocalendar(y, w, dag_index)
+            
+            header_row.append(f"{dag} ({date.strftime('%d-%b')})")
+            
         rows.append(header_row)
         rows.append(data_row)
 
     columns = ["Week"] + DAYS_NL
     return pd.DataFrame(rows, columns=columns)
 
-def format_activities_calendar_sheet(ws, matrix: pd.DataFrame, tz_str: str):
-    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+def format_activities_calendar_sheet(ws, df, TZ):
 
-    bold = Font(bold=True)
-    grey = Font(color="888888")
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from datetime import datetime
 
-    center = Alignment(horizontal="center", vertical="center")
-    wrap = Alignment(wrap_text=True, vertical="top")
+    DAYS_NL_LOCAL = DAYS_NL  # gebruik jouw bestaande lijst
 
-    thin = Side(style="thin", color="999999")
-    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    # 🎨 kleur (pas aan naar smaak / bar-CK stijl)
+    fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
 
-    WEEK_COLORS = ["D9E1F2", "E2EFDA", "FCE4D6", "EAD1DC", "FFF2CC"]
+    max_row = ws.max_row
+    max_col = ws.max_column
 
-    # 🔹 kolombreedtes
-    ws.column_dimensions['A'].width = 14
-    for col in ws.iter_cols(min_col=2):
-        ws.column_dimensions[col[0].column_letter].width = 26
+    # 🔹 Kolombreedtes
+    ws.column_dimensions["A"].width = 12
+    for col in range(2, max_col + 1):
+        ws.column_dimensions[chr(64 + col)].width = 22
 
-    # 🔹 rijen verwerken (per week 2 rijen)
-    for r_idx in range(2, ws.max_row + 1):
+    # 🔹 Loop per week (2 rijen tegelijk)
+    row = 2  # rij 1 = pandas header → overslaan
 
-        row = ws[r_idx]
-        is_header_row = (r_idx % 2 == 0)  # eerste rij van weekblok
+    week_index = 0
 
-        week_index = (r_idx - 2) // 2
-        color = WEEK_COLORS[week_index % len(WEEK_COLORS)]
-        fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
+    while row <= max_row:
 
-        for c_idx, cell in enumerate(row):
+        header_row = row
+        data_row   = row + 1
 
-            cell.border = border
+        # 🔸 1. Week bepalen uit header (ISO jaar/week reconstrueren)
+        # We halen datum uit eerste dagkolom (bijv. maandag)
+        first_day_cell = ws.cell(row=header_row, column=2).value
 
-            if is_header_row:
-                # 🔹 header rij (dag + datum)
-                cell.fill = fill
-                cell.font = bold
-                cell.alignment = center
+        try:
+            # verwacht: "Maandag (01-Apr)"
+            date_str = first_day_cell.split("(")[1].strip(")")
+            date_obj = datetime.strptime(date_str, "%d-%b")
+            year = datetime.now().year  # fallback (kan je verfijnen)
+            # ISO week bepalen
+            iso = date_obj.replace(year=year).isocalendar()
+            week_label = f"{iso.year}-W{iso.week:02d}"
+        except:
+            week_label = f"Week {week_index+1}"
 
-            else:
-                # 🔹 data rij
-                cell.alignment = wrap
+        # 🔸 2. Merge kolom A (2 rijen)
+        ws.merge_cells(start_row=header_row, start_column=1,
+                       end_row=data_row, end_column=1)
 
-                if c_idx == 0:
-                    cell.font = bold
-                    cell.alignment = center
+        cell = ws.cell(row=header_row, column=1)
+        cell.value = week_label
 
-        # 🔹 rijhoogtes
-        if is_header_row:
-            ws.row_dimensions[r_idx].height = 28
-        else:
-            ws.row_dimensions[r_idx].height = 95
+        # styling kolom A
+        cell.font = Font(bold=True, size=12)
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.fill = fill
 
-    # 🔹 timestamp (A1)
-    now = now_naive_in_tz(tz_str)
-    cell = ws.cell(row=1, column=1)
-    cell.value = now.strftime("%d-%m %H:%M")
-    cell.font = grey
+        # 🔸 3. Header rij (dag + datum)
+        for col in range(2, max_col + 1):
+            c = ws.cell(row=header_row, column=col)
+
+            c.font = Font(bold=True)
+            c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            c.fill = fill
+
+        # 🔸 4. Data rij (activiteiten)
+        for col in range(2, max_col + 1):
+            c = ws.cell(row=data_row, column=col)
+
+            c.alignment = Alignment(vertical="top", wrap_text=True)
+
+        # 🔸 5. Rijhoogtes (belangrijk voor leesbaarheid)
+        ws.row_dimensions[header_row].height = 22
+        ws.row_dimensions[data_row].height = 60
+
+        # volgende week
+        row += 2
+        week_index += 1
     
     
 def load_afgeschermd_overrides_from_dropbox(debug=False):
