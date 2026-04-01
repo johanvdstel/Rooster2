@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*--
 # ===== versie =======
-__version__ = "3.4.4"
+__version__ = "3.4.5"
 # ====================
 
 import io
@@ -120,63 +120,35 @@ def build_activities_calendar_matrix(df_activities):
 
     df = df_activities.copy()
 
-    # 🔹 Kolomnamen opschonen
-    df.columns = (
-        df.columns
-        .str.strip()
-        .str.replace("\n", "")
-        .str.replace("\r", "")
-    )
+    # 🔹 Gebruik jouw genormaliseerde kolommen
+    if "Date" not in df.columns:
+        raise ValueError(f"'Date' kolom ontbreekt: {df.columns}")
 
-    # 🔹 JOUW kolommen (nu betrouwbaar)
-    start_col = next((c for c in df.columns if "datum van" in c.lower()), None)
-    end_col   = next((c for c in df.columns if "datum t/m" in c.lower()), None)
-    name_col  = next((c for c in df.columns if "activiteit" in c.lower()), None)
+    df["date"] = pd.to_datetime(df["Date"]).dt.date
 
-    if start_col is None:
-        raise ValueError(f"Start kolom niet gevonden. Kolommen: {df.columns}")
-
-    if name_col is None:
-        name_col = df.columns[0]
-
-    # 🔹 Parse datetime
-    df["start_dt"] = pd.to_datetime(df[start_col])
-    if end_col:
-        df["end_dt"] = pd.to_datetime(df[end_col])
+    # 🔹 Bouw tekst (tijd + activiteit)
+    if "Tijd" in df.columns:
+        df["text"] = df["Tijd"].astype(str) + " " + df["Activiteit"].astype(str)
     else:
-        df["end_dt"] = None
+        df["text"] = df["Activiteit"].astype(str)
 
-    # 🔹 Datum + tekst
-    df["date"] = df["start_dt"].dt.date
-
-    if end_col:
-        df["text"] = (
-            df["start_dt"].dt.strftime("%H:%M")
-            + "-"
-            + df["end_dt"].dt.strftime("%H:%M")
-            + " "
-            + df[name_col].astype(str)
-        )
+    # 🔹 Sorteer op datum + tijd (indien mogelijk)
+    if "Tijd" in df.columns:
+        df = df.sort_values(["date", "Tijd"])
     else:
-        df["text"] = (
-            df["start_dt"].dt.strftime("%H:%M")
-            + " "
-            + df[name_col].astype(str)
-        )
+        df = df.sort_values("date")
 
-    # 🔹 Sorteer
-    df = df.sort_values("start_dt")
-
-    # 🔹 Groeperen
+    # 🔹 Groepeer per dag
     grouped = df.groupby("date")["text"].apply(list)
 
-    # 🔹 Volledige datumrange (BELANGRIJK voor 90 dagen)
+    # 🔹 Volledige datumrange (belangrijk voor 90 dagen!)
     all_dates = pd.date_range(
         start=min(grouped.index),
         end=max(grouped.index),
         freq="D"
     )
 
+    # 🔹 Matrix met echte datetime kolommen
     matrix = pd.DataFrame(index=[0], columns=all_dates)
 
     for d in all_dates:
