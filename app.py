@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*--
 # ===== versie =======
-__version__ = "3.4.0"
+__version__ = "3.4.1"
 # ====================
 
 import io
@@ -169,14 +169,24 @@ def build_activities_calendar_matrix(df_activities: pd.DataFrame):
 
 
 def format_activities_calendar_sheet(ws, df, TZ):
-    from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+    """
+    Format the activities calendar sheet with week headers, styling, and 90-day activities.
+    Automatically calculates week numbers from the dates in df['date'].
+    """
     import pandas as pd
+    from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+    from openpyxl.utils import get_column_letter
 
+    # 🔹 Bereken unieke weken uit df
+    df['date'] = pd.to_datetime(df['date'])
+    activities_weeks = sorted({(d.year, d.isocalendar()[1]) for d in df['date']})
+
+    # 🔹 Freeze header en weeknummerkolom
     ws.freeze_panes = "B2"
-    
+
+    # 🔹 Randen instellen
     thin = Side(style="thin", color="000000")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
-    
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row,
                             min_col=1, max_col=ws.max_column):
         for cell in row:
@@ -185,63 +195,59 @@ def format_activities_calendar_sheet(ws, df, TZ):
     max_row = ws.max_row
     max_col = ws.max_column
 
-    # 🔹 Timestamp terug in A1 en grijzen
+    # 🔹 Timestamp in cel A1 grijs
     now = now_naive_in_tz(TZ)
     ts_cell = ws.cell(row=1, column=1)
     ts_cell.value = now.strftime("%d %b %H:%M")
     ts_cell.font = Font(color="888888")  # grijs
+    ts_cell.alignment = Alignment(horizontal="center", vertical="center")
 
     # 🔹 Kolombreedtes
     ws.column_dimensions["A"].width = 14
     for col in range(2, max_col + 1):
-        ws.column_dimensions[chr(64 + col)].width = 28
-
-    # 🔹 Automatisch weeks_pairs maken van df
-    df_dates = pd.to_datetime(df.columns[1:])  # neem alle kolomdatums, behalve kolom A
-    activities_weeks = sorted({(d.isocalendar().year, d.isocalendar().week) for d in df_dates})
+        ws.column_dimensions[get_column_letter(col)].width = 28
 
     row = 2
     week_index = 0
 
+    # 🔹 Loop over alle weken
     while row <= max_row:
-
         header_row = row
         data_row   = row + 1
 
-        # ✅ Correct weeklabel
+        # ✅ Weeklabel
         if week_index < len(activities_weeks):
             y, w = activities_weeks[week_index]
             week_label = f"{y}-W{w:02d}"
         else:
             week_label = ""
 
-        # 🎨 zelfde wisselende kleuren als andere sheets
+        # 🎨 Weekkleur
         color = WEEK_COLORS[week_index % len(WEEK_COLORS)]
         fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
 
-        # 🔹 merge kolom A
+        # 🔹 Merge kolom A voor weeklabel
         ws.merge_cells(start_row=header_row, start_column=1,
                        end_row=data_row, end_column=1)
-
         cell = ws.cell(row=header_row, column=1)
         cell.value = week_label
         cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal="center", vertical="center")
         cell.fill = fill
 
-        # 🔹 header (dag + datum)
+        # 🔹 Header (dagen + datum)
         for col in range(2, max_col + 1):
             c = ws.cell(row=header_row, column=col)
             c.font = Font(bold=True, size=13)
             c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             c.fill = fill
 
-        # 🔹 data (activiteiten)
+        # 🔹 Data (activiteiten)
         for col in range(2, max_col + 1):
             c = ws.cell(row=data_row, column=col)
             c.alignment = Alignment(vertical="top", wrap_text=True)
 
-        # 🔹 rijhoogtes
+        # 🔹 Rijhoogtes
         ws.row_dimensions[header_row].height = 24
         ws.row_dimensions[data_row].height = 80
 
