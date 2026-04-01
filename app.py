@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*--
 # ===== versie =======================
 #
-__version__ = "3.4.8"
-# fix dagen in header regels 
+__version__ = "3.4.9"
+# fix styling en data in header r1 
 #
 # ====================================
 
@@ -174,12 +174,12 @@ def build_activities_calendar_matrix(df_activities):
 def format_activities_calendar_sheet(ws, df, TZ):
     import pandas as pd
     from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
-    from openpyxl.utils import get_column_letter
 
     thin = Side(style="thin", color="000000")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    max_col = ws.max_column
+    # ===== Vaste sheet-breedte: alleen A t/m H gebruiken =====
+    FIXED_MAX_COL = 8  # A + 7 weekdagen
 
     # ===== Rij 1: vaste header =====
     now = now_naive_in_tz(TZ)
@@ -190,6 +190,9 @@ def format_activities_calendar_sheet(ws, df, TZ):
     ts_cell.font = Font(italic=True, color="FF666666")
     ts_cell.alignment = Alignment(horizontal="left", vertical="center")
 
+    # Vaste grijze header-fill voor weekdagen
+    header_fill = PatternFill(start_color="FFD9D9D9", end_color="FFD9D9D9", fill_type="solid")
+
     # B1:H1 = weekdagen
     for i, dag in enumerate(DAYS_NL, start=2):
         c = ws.cell(row=1, column=i)
@@ -197,26 +200,20 @@ def format_activities_calendar_sheet(ws, df, TZ):
         c.font = Font(bold=True, size=15)
         c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         c.border = border
-
-        # zelfde dagkleur als andere sheets
-        fill = PatternFill(
-            start_color=DAY_COLORS.get(dag, "FFFFFFFF"),
-            end_color=DAY_COLORS.get(dag, "FFFFFFFF"),
-            fill_type="solid"
-        )
-        c.fill = fill
+        c.fill = header_fill
 
     ws.row_dimensions[1].height = 26
 
-    # 🔹 Kolombreedtes
+    # Kolombreedtes
     ws.column_dimensions["A"].width = 14
-    for col in range(2, 9):  # alleen B t/m H
+    for col in range(2, 9):  # B t/m H
+        from openpyxl.utils import get_column_letter
         ws.column_dimensions[get_column_letter(col)].width = 28
 
-    # 🔹 Haal echte datums uit kolommen
+    # Echte datums uit dataframe
     date_columns = list(df.columns[1:])
 
-    # 🔹 Bepaal weken
+    # Weken bepalen
     activities_weeks = []
     for d in date_columns:
         iso = pd.Timestamp(d).isocalendar()
@@ -224,7 +221,6 @@ def format_activities_calendar_sheet(ws, df, TZ):
         if pair not in activities_weeks:
             activities_weeks.append(pair)
 
-    # Start nu op rij 2, want rij 1 is vaste header
     row = 2
     col_index = 0
     week_index = 0
@@ -237,32 +233,28 @@ def format_activities_calendar_sheet(ws, df, TZ):
         week_label = f"{y}-W{w:02d}"
 
         color = WEEK_COLORS[week_index % len(WEEK_COLORS)]
-        fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
+        week_fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
 
-        # Kolom A: weeklabel merged over 2 rijen
-        ws.merge_cells(start_row=header_row, start_column=1,
-                       end_row=data_row, end_column=1)
+        # Kolom A merge over 2 rijen
+        ws.merge_cells(start_row=header_row, start_column=1, end_row=data_row, end_column=1)
 
         cell = ws.cell(row=header_row, column=1)
         cell.value = week_label
         cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal="center", vertical="center")
-        cell.fill = fill
+        cell.fill = week_fill
         cell.border = border
 
-        # Ook onderste deel van merge netjes border/fill
+        ws.cell(row=data_row, column=1).fill = week_fill
         ws.cell(row=data_row, column=1).border = border
-        ws.cell(row=data_row, column=1).fill = fill
 
-        # 7 dagen per week -> vaste kolommen B t/m H
+        # B t/m H altijd exact 7 dagen
         for i in range(7):
             col = 2 + i
-
-            # standaard styling, ook voor lege cellen aan einde
             hcell = ws.cell(row=header_row, column=col)
             dcell = ws.cell(row=data_row, column=col)
 
-            hcell.fill = fill
+            hcell.fill = week_fill
             hcell.border = border
             hcell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             hcell.font = Font(bold=True, size=13)
@@ -276,20 +268,16 @@ def format_activities_calendar_sheet(ws, df, TZ):
                 continue
 
             d = pd.Timestamp(date_columns[col_index])
-
-            # Alleen invullen als datum echt in deze week hoort
             iso = d.isocalendar()
+
+            # Alleen vullen als datum in huidige week hoort
             if (iso.year, iso.week) != (y, w):
                 hcell.value = ""
                 dcell.value = ""
                 continue
 
-            # Header per week: alleen datum
             hcell.value = f"{d.day:02d} {month_short_nl(d.month)}"
-
-            # Data
-            val = df.iloc[0, col_index + 1]
-            dcell.value = val
+            dcell.value = df.iloc[0, col_index + 1]
 
             col_index += 1
 
@@ -298,6 +286,11 @@ def format_activities_calendar_sheet(ws, df, TZ):
 
         row += 2
         week_index += 1
+
+    # Alles rechts van H leegmaken/verwijderen
+    extra_cols = ws.max_column - FIXED_MAX_COL
+    if extra_cols > 0:
+        ws.delete_cols(FIXED_MAX_COL + 1, extra_cols)
 
     ws.freeze_panes = "B2"
     
