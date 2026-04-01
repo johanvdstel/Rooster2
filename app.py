@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*--
-# ===== versie =====
-__version__ = "3.2.2"
-# ===================
+# ===== versie =======
+__version__ = "3.3.0"
+# ====================
 
 import io
 import warnings
@@ -58,7 +58,7 @@ sportlink_stats = {
 }
 
 # ===== Verenigingsactiviteiten =====
-ACTIVITIES_DAYS_AHEAD = 60
+ACTIVITIES_DAYS_AHEAD = 90
 
 ACTIVITIES_FIELDS = (
     "kalendernaam,kalendersoort,activiteit,datumvan,datumtm,"
@@ -170,15 +170,28 @@ def build_activities_calendar_matrix(df_activities: pd.DataFrame):
 
 def format_activities_calendar_sheet(ws, df, TZ, weeks_pairs):
 
-    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+
+    ws.freeze_panes = "B2"
+    
+    thin = Side(style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row,
+                            min_col=1, max_col=ws.max_column):
+        for cell in row:
+            cell.border = border
 
     max_row = ws.max_row
     max_col = ws.max_column
 
-    # 🔹 Timestamp terug in A1
+    # 🔹 Timestamp terug in A1 en grijzen
     now = now_naive_in_tz(TZ)
     ws.cell(row=1, column=1).value = now.strftime("%d %b %H:%M")
-
+    ts_cell = ws.cell(row=1, column=1)
+    ts_cell.value = now.strftime("%d %b %H:%M")
+    ts_cell.font = Font(color="888888")  # grijs
+    
     # 🔹 Kolombreedtes
     ws.column_dimensions["A"].width = 14
     for col in range(2, max_col + 1):
@@ -216,7 +229,7 @@ def format_activities_calendar_sheet(ws, df, TZ, weeks_pairs):
         # 🔹 header (dag + datum)
         for col in range(2, max_col + 1):
             c = ws.cell(row=header_row, column=col)
-            c.font = Font(bold=True)
+            c.font = Font(bold=True, size=13)
             c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             c.fill = fill
 
@@ -1398,7 +1411,7 @@ def make_excel(df_bar, df_ck, annotations,
     
                 sheet_name = "Activiteiten"
             
-                matrix_activities_calendar.to_excel(writer, sheet_name=sheet_name)
+                matrix_activities_calendar.to_excel(writer, sheet_name=sheet_name, index=False)
             
                 ws_act = writer.sheets[sheet_name]
             
