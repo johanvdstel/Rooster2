@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*--
 # ===== versie =======
-__version__ = "3.4.1"
+__version__ = "3.4.2"
 # ====================
 
 import io
@@ -111,149 +111,136 @@ DROPBOX_OVERRIDE_URL = "https://www.dropbox.com/scl/fi/w1711x6bzna5lniz0cvkw/Afg
 
 # ---------- helpers ----------
 # ------ build activities calendar -------
-def build_activities_calendar_matrix(df_activities: pd.DataFrame):
+def build_activities_calendar_matrix(df_activities):
+    import pandas as pd
 
     if df_activities.empty:
         return pd.DataFrame()
 
     df = df_activities.copy()
-    df = df.sort_values(["ISO_Year", "Week", "Datum", "Tijd"])
 
-    weeks = sorted({
-        (int(y), int(w))
-        for y, w in zip(df["ISO_Year"], df["Week"])
-    })
+    # 🔹 Zorg dat datum kolom bestaat en datetime is
+    df["date"] = pd.to_datetime(df["start"]).dt.date
 
-    grouped = df.groupby(["ISO_Year", "Week", "Dag"])
+    # 🔹 Maak tekst per activiteit (tijd + naam)
+    df["text"] = df["start"].dt.strftime("%H:%M") + " " + df["name"]
 
-    rows = []
+    # 🔹 Groepeer per dag
+    grouped = df.groupby("date")["text"].apply(list)
 
-    for (y, w) in weeks:
+    # 🔹 Bepaal volledige datumbereik (BELANGRIJK voor 90 dagen!)
+    all_dates = pd.date_range(
+        start=min(grouped.index),
+        end=max(grouped.index),
+        freq="D"
+    )
 
-        header_row = [""]   # kolom A (week)
-        data_row   = [""]
+    # 🔹 Maak matrix met alle dagen (ook lege)
+    matrix = pd.DataFrame(index=[0], columns=all_dates)
 
-        for dag in DAYS_NL:
+    for d in all_dates:
+        if d.date() in grouped:
+            matrix[d] = "\n".join(grouped[d.date()])
+        else:
+            matrix[d] = ""
 
-            if (y, w, dag) in grouped.groups:
-                group = grouped.get_group((y, w, dag))
+    # 🔹 Kolom A placeholder (wordt later weeklabel)
+    matrix.insert(0, "Week", "")
 
-                # datum
-                date = group.iloc[0]["Datum"]
-
-                # activiteiten met tijd
-                lines = []
-                for _, r in group.iterrows():
-                    tijd = r["Tijd"]
-                    naam = r["Activiteit"]
-                    lines.append(f"{tijd} {naam}")
-
-                cell_text = "\n".join(lines)
-
-            else:
-                from datetime import datetime
-                dag_index = DAYS_NL.index(dag) + 1
-                date = datetime.fromisocalendar(y, w, dag_index)
-                cell_text = ""
-
-            header_row.append(f"{dag} ({date.strftime('%d-%b')})")
-            data_row.append(cell_text)
-
-        rows.append(header_row)
-        rows.append(data_row)
-
-    # 🔥 GEEN "Week" kolom meer!
-    columns = [""] + DAYS_NL
-
-    return pd.DataFrame(rows, columns=columns)
+    return matrix
 
 
 def format_activities_calendar_sheet(ws, df, TZ):
-    """
-    Format the activities calendar sheet with week headers, styling, and 90-day activities.
-    Automatically calculates week numbers from the dates in df['date'].
-    """
     import pandas as pd
     from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
     from openpyxl.utils import get_column_letter
 
-    # 🔹 Bereken unieke weken uit df
-    df['date'] = pd.to_datetime(df['date'])
-    activities_weeks = sorted({(d.year, d.isocalendar()[1]) for d in df['date']})
-
-    # 🔹 Freeze header en weeknummerkolom
     ws.freeze_panes = "B2"
 
-    # 🔹 Randen instellen
     thin = Side(style="thin", color="000000")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
-    for row in ws.iter_rows(min_row=2, max_row=ws.max_row,
-                            min_col=1, max_col=ws.max_column):
-        for cell in row:
-            cell.border = border
 
-    max_row = ws.max_row
     max_col = ws.max_column
 
-    # 🔹 Timestamp in cel A1 grijs
+    # 🔹 Timestamp
     now = now_naive_in_tz(TZ)
     ts_cell = ws.cell(row=1, column=1)
     ts_cell.value = now.strftime("%d %b %H:%M")
-    ts_cell.font = Font(color="888888")  # grijs
-    ts_cell.alignment = Alignment(horizontal="center", vertical="center")
+    ts_cell.font = Font(color="888888")
 
     # 🔹 Kolombreedtes
     ws.column_dimensions["A"].width = 14
     for col in range(2, max_col + 1):
         ws.column_dimensions[get_column_letter(col)].width = 28
 
+    # 🔹 Haal echte datums uit kolommen
+    date_columns = list(df.columns[1:])
+
+    # 🔹 Bepaal weken
+    activities_weeks = []
+    for d in date_columns:
+        iso = pd.Timestamp(d).isocalendar()
+        pair = (iso.year, iso.week)
+        if pair not in activities_weeks:
+            activities_weeks.append(pair)
+
     row = 2
+    col_index = 0
     week_index = 0
 
-    # 🔹 Loop over alle weken
-    while row <= max_row:
+    while col_index < len(date_columns):
+
         header_row = row
-        data_row   = row + 1
+        data_row = row + 1
 
-        # ✅ Weeklabel
-        if week_index < len(activities_weeks):
-            y, w = activities_weeks[week_index]
-            week_label = f"{y}-W{w:02d}"
-        else:
-            week_label = ""
+        y, w = activities_weeks[week_index]
+        week_label = f"{y}-W{w:02d}"
 
-        # 🎨 Weekkleur
         color = WEEK_COLORS[week_index % len(WEEK_COLORS)]
         fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
 
-        # 🔹 Merge kolom A voor weeklabel
+        # 🔹 Merge kolom A
         ws.merge_cells(start_row=header_row, start_column=1,
                        end_row=data_row, end_column=1)
+
         cell = ws.cell(row=header_row, column=1)
         cell.value = week_label
         cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal="center", vertical="center")
         cell.fill = fill
+        cell.border = border
 
-        # 🔹 Header (dagen + datum)
-        for col in range(2, max_col + 1):
+        # 🔹 7 dagen per week
+        for i in range(7):
+            if col_index >= len(date_columns):
+                break
+
+            d = pd.Timestamp(date_columns[col_index])
+
+            col = 2 + i
+
+            # Header
             c = ws.cell(row=header_row, column=col)
-            c.font = Font(bold=True, size=13)
+            c.value = d.strftime("%a (%d-%b)")
+            c.font = Font(bold=True, size=14)
             c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             c.fill = fill
+            c.border = border
 
-        # 🔹 Data (activiteiten)
-        for col in range(2, max_col + 1):
-            c = ws.cell(row=data_row, column=col)
-            c.alignment = Alignment(vertical="top", wrap_text=True)
+            # Data
+            val = df.iloc[0, col_index + 1]
+            dcell = ws.cell(row=data_row, column=col)
+            dcell.value = val
+            dcell.alignment = Alignment(vertical="top", wrap_text=True)
+            dcell.border = border
 
-        # 🔹 Rijhoogtes
+            col_index += 1
+
         ws.row_dimensions[header_row].height = 24
         ws.row_dimensions[data_row].height = 80
 
         row += 2
-        week_index += 1
-    
+        week_index += 1    
     
 def load_afgeschermd_overrides_from_dropbox(debug=False):
     overrides = {}
