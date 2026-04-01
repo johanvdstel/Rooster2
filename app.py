@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*--
 # ===== versie =====
-__version__ = "3.2.1"
+__version__ = "3.2.2"
 # ===================
 
 import io
@@ -193,8 +193,11 @@ def format_activities_calendar_sheet(ws, df, TZ, weeks_pairs):
         data_row   = row + 1
 
         # ✅ Correct weeklabel
-        y, w = weeks_pairs[week_index]
-        week_label = f"{y}-W{w:02d}"
+        if week_index < len(weeks_pairs):
+            y, w = weeks_pairs[week_index]
+            week_label = f"{y}-W{w:02d}"
+        else:
+            week_label = ""
 
         # 🎨 zelfde wisselende kleuren als andere sheets
         color = WEEK_COLORS[week_index % len(WEEK_COLORS)]
@@ -1331,12 +1334,20 @@ def make_excel(df_bar, df_ck, annotations,
         warnings_total = warn_bar + warn_ck + slot_warnings
     
         # Overrides toepassen
+        # Eerst slots bouwen (met of zonder activities)
+        merged_slots, slot_warnings = merge_custom_slots_into_defaults(
+            [df_bar, df_ck],
+            DEFAULT_SLOTS,
+            df_activities if use_activities else None
+        )
+        
+        # 👉 Overrides ALTIJD toepassen
         if use_overrides:
             overrides = load_afgeschermd_overrides_from_dropbox(debug_fetch)
         
             apply_afgeschermd_overrides(matrix_bar, overrides, "bar", WEEK_LABEL, debug_fetch)
             apply_afgeschermd_overrides(matrix_ck,  overrides, "ck",  WEEK_LABEL, debug_fetch)
-    
+        
         # Vullen: handmatig
         fill_manual(matrix_bar, annotations, merged_slots, WEEK_LABEL)
         fill_manual(matrix_ck,  annotations, merged_slots, WEEK_LABEL)
