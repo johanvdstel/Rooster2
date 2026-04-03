@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*--
 # ===== versie =======================
 #
-__version__ = "3.4.9.1"
-# Stap 1 refactor 
+__version__ = "3.4.9.2"
+# Stap 2 refactor 
 #
 # ====================================
 
@@ -1387,7 +1387,9 @@ def make_excel(df_bar, df_ck, annotations,
     df_activities = pd.DataFrame()
     activities_index = {}
     matrix_activities_calendar = None
-    warnings_total = []
+
+    slot_warnings = []
+    placement_warnings = []
 
     # ===== Activiteiten ophalen / normaliseren =====
     if use_activities or add_activities_sheet:
@@ -1438,9 +1440,8 @@ def make_excel(df_bar, df_ck, annotations,
     # ===== Namen vullen =====
     warn_bar = fill_names(matrix_bar, df_bar, merged_slots, WEEK_LABEL)
     warn_ck = fill_names(matrix_ck, df_ck, merged_slots, WEEK_LABEL)
-    warnings_total.extend(warn_bar)
-    warnings_total.extend(warn_ck)
-    warnings_total.extend(slot_warnings)
+    placement_warnings.extend(warn_bar)
+    placement_warnings.extend(warn_ck)
 
     # ===== Overrides toepassen =====
     if use_overrides:
@@ -1487,13 +1488,13 @@ def make_excel(df_bar, df_ck, annotations,
         # BarRooster
         matrix_bar.to_excel(writer, sheet_name="BarRooster")
         ws_bar = writer.sheets["BarRooster"]
-        ws_bar.delete_cols(4)  # verwijder kolom D = Regel
+        ws_bar.delete_cols(4)
         format_sheet(ws_bar, matrix_bar, merged_slots, TZ)
 
         # CommissieKamer
         matrix_ck.to_excel(writer, sheet_name="CommissieKamer")
         ws_ck = writer.sheets["CommissieKamer"]
-        ws_ck.delete_cols(4)  # verwijder kolom D = Regel
+        ws_ck.delete_cols(4)
         format_sheet(ws_ck, matrix_ck, merged_slots, TZ)
 
         # Activiteiten
@@ -1515,7 +1516,7 @@ def make_excel(df_bar, df_ck, annotations,
             )
 
     bio.seek(0)
-    return bio, warnings_total
+    return bio, slot_warnings, placement_warnings
 
 # =========================
 # UI (simpel)
@@ -1570,7 +1571,7 @@ if st.button("Genereer rooster", use_container_width=True):
             annotations = parse_manual_text(manual_text)
                 
             # Excel bouwen (met/zonder wedstrijden) + waarschuwingen
-            xlsx, warnings_total = make_excel(
+            xlsx, slot_warnings, placement_warnings = make_excel(
                 df_bar,
                 df_ck,
                 annotations,
@@ -1583,15 +1584,11 @@ if st.button("Genereer rooster", use_container_width=True):
 
 
         # Waarschuwingen tonen (als aanwezig)
-        slot_msgs = [w for w in warnings_total if "slot" in w.lower()]
-        placement_msgs = [w for w in warnings_total if w not in slot_msgs]
-
-        if slot_msgs:
-            st.info("ℹ️ Tijdsloten automatisch toegevoegd:\n\n- " + "\n- ".join(slot_msgs))
+        if slot_warnings:
+            st.info("ℹ️ Tijdsloten automatisch toegevoegd:\n\n- " + "\n- ".join(slot_warnings))
         
-        if placement_msgs:
-            st.warning("⚠️ Niet alle diensten konden worden geplaatst:\n\n- " + "\n- ".join(placement_msgs))            
-        
+        if placement_warnings:
+            st.warning("⚠️ Niet alle diensten konden worden geplaatst:\n\n- " + "\n- ".join(placement_warnings))
         
         calls = sportlink_stats["calls"]
                 
