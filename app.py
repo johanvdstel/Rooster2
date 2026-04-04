@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*--
 # ===== versie =======================
 #
-__version__ = "3.4.9.2"
-# Stap 2 refactor 
+__version__ = "3.4.9.3"
+# Stap 3 refactor 
 #
 # ====================================
 
@@ -296,7 +296,9 @@ def format_activities_calendar_sheet(ws, df, TZ):
     
 def load_afgeschermd_overrides_from_dropbox(debug=False):
     overrides = {}
-    warnings = []
+    warning_lines = []
+    debug_lines = []
+    error_message = None
 
     try:
         url = _ensure_dropbox_direct(DROPBOX_OVERRIDE_URL)
@@ -312,7 +314,7 @@ def load_afgeschermd_overrides_from_dropbox(debug=False):
 
             # basis check
             if len(parts) < 4:
-                warnings.append(f"regel {lineno}: te weinig velden → '{raw}'")
+                warning_lines.append(f"regel {lineno}: te weinig velden → '{raw}'")
                 continue
 
             date_str, time_str, loc = parts[0], parts[1], parts[2].lower()
@@ -322,44 +324,37 @@ def load_afgeschermd_overrides_from_dropbox(debug=False):
             try:
                 datetime.strptime(date_str, "%Y-%m-%d")
             except Exception:
-                warnings.append(f"regel {lineno}: ongeldige datum → '{raw}'")
+                warning_lines.append(f"regel {lineno}: ongeldige datum → '{raw}'")
                 continue
 
             # tijd validatie
             try:
                 datetime.strptime(time_str, "%H:%M")
             except Exception:
-                warnings.append(f"regel {lineno}: ongeldige tijd → '{raw}'")
+                warning_lines.append(f"regel {lineno}: ongeldige tijd → '{raw}'")
                 continue
 
             # locatie validatie
             if loc not in ("bar", "ck"):
-                warnings.append(f"regel {lineno}: onbekende locatie '{loc}' → '{raw}'")
+                warning_lines.append(f"regel {lineno}: onbekende locatie '{loc}' → '{raw}'")
                 continue
 
             # naam check
             if not name:
-                warnings.append(f"regel {lineno}: ontbrekende naam → '{raw}'")
+                warning_lines.append(f"regel {lineno}: ontbrekende naam → '{raw}'")
                 continue
 
             key = (date_str, time_str, loc)
             overrides.setdefault(key, []).append(name)
 
-        # logging
         if debug:
-            st.write(f"Overrides geladen: {len(overrides)} geldige sleutels")
-
-        if warnings:
-            st.warning(
-                "⚠️ Ongeldige override regels overgeslagen:\n\n- " +
-                "\n- ".join(warnings)
-            )
+            debug_lines.append(f"Overrides geladen: {len(overrides)} geldige sleutels")
 
     except Exception as e:
-        st.error(f"Fout bij laden overrides: {e}")
+        error_message = f"Fout bij laden overrides: {e}"
 
-    return overrides
-
+    return overrides, warning_lines, error_message, debug_lines
+    
 def apply_afgeschermd_overrides(matrix: pd.DataFrame,
                                  overrides: dict,
                                  location: str,
@@ -1444,11 +1439,17 @@ def make_excel(df_bar, df_ck, annotations,
     placement_warnings.extend(warn_ck)
 
     # ===== Overrides toepassen =====
+    override_warnings = []
+    override_error = None
+    override_debug = []
+    
     if use_overrides:
-        overrides = load_afgeschermd_overrides_from_dropbox(debug_fetch)
+        overrides, override_warnings, override_error, override_debug = load_afgeschermd_overrides_from_dropbox(debug_fetch)
+    
         apply_afgeschermd_overrides(matrix_bar, overrides, "bar", WEEK_LABEL, debug_fetch)
         apply_afgeschermd_overrides(matrix_ck, overrides, "ck", WEEK_LABEL, debug_fetch)
-
+        
+        
     # ===== Handmatige input vullen =====
     fill_manual(matrix_bar, annotations, merged_slots, WEEK_LABEL)
     fill_manual(matrix_ck, annotations, merged_slots, WEEK_LABEL)
@@ -1516,7 +1517,7 @@ def make_excel(df_bar, df_ck, annotations,
             )
 
     bio.seek(0)
-    return bio, slot_warnings, placement_warnings
+    return bio, slot_warnings, placement_warnings, override_warnings, override_error, override_debug
 
 # =========================
 # UI (simpel)
@@ -1571,7 +1572,7 @@ if st.button("Genereer rooster", use_container_width=True):
             annotations = parse_manual_text(manual_text)
                 
             # Excel bouwen (met/zonder wedstrijden) + waarschuwingen
-            xlsx, slot_warnings, placement_warnings = make_excel(
+            xlsx, slot_warnings, placement_warnings, override_warnings, override_error, override_debug = make_excel(
                 df_bar,
                 df_ck,
                 annotations,
@@ -1590,6 +1591,19 @@ if st.button("Genereer rooster", use_container_width=True):
         if placement_warnings:
             st.warning("⚠️ Niet alle diensten konden worden geplaatst:\n\n- " + "\n- ".join(placement_warnings))
         
+        if override_warnings:
+            st.warning(
+                "⚠️ Ongeldige override regels overgeslagen:\n\n- " +
+                "\n- ".join(override_warnings)
+            )
+        
+        if override_error:
+            st.error(override_error)
+        
+        if debug_fetch and override_debug:
+            for msg in override_debug:
+                st.write(msg)
+                   
         calls = sportlink_stats["calls"]
                 
         retries = sportlink_stats["retries"]
