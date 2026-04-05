@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*--
 # ===== versie =======================
 #
-__version__ = "3.4.9.3"
-# Stap 3 refactor 
+__version__ = "3.4.9.3b"
+# Stap 3b refactor 
 #
 # ====================================
 
@@ -359,8 +359,9 @@ def apply_afgeschermd_overrides(matrix: pd.DataFrame,
                                  overrides: dict,
                                  location: str,
                                  week_label_style: str,
-                                 debug: bool = False):
+                                 debug: bool = False) -> List[str]:
 
+    debug_lines = []
     applied_count = 0
     added_count = 0
 
@@ -410,6 +411,8 @@ def apply_afgeschermd_overrides(matrix: pd.DataFrame,
 
             n = len(afgeschermd_idx)
             m = len(names_override)
+            changed = False
+            to_add = []
 
             # ===== CASE 1: vervangen =====
             if n > 0:
@@ -420,31 +423,40 @@ def apply_afgeschermd_overrides(matrix: pd.DataFrame,
                     names_existing[idx] = names_override[i]
 
                 applied_count += replace_count
+                changed = replace_count > 0
 
-                if debug:
-                    st.write(f"[override] {location} {date} {van}: {replace_count}/{n} vervangen")
+                if debug and replace_count > 0:
+                    debug_lines.append(
+                        f"[override] {location} {date} {van}: {replace_count}/{n} vervangen"
+                    )
 
             # ===== CASE 2: toevoegen =====
             elif m > 0:
-                # voorkom dubbele namen
                 existing_set = {n.strip().lower() for n in names_existing if n.strip()}
-
                 to_add = [n for n in names_override if n.strip().lower() not in existing_set]
 
                 if to_add:
                     names_existing.extend(to_add)
                     added_count += len(to_add)
+                    changed = True
 
                     if debug:
-                        st.write(f"[override] {location} {date} {van}: {len(to_add)} toegevoegd")
+                        debug_lines.append(
+                            f"[override] {location} {date} {van}: {len(to_add)} toegevoegd"
+                        )
 
-            # Terugschrijven (alleen als iets veranderd is)
-            if n > 0 or (m > 0 and to_add):
+            # Terugschrijven
+            if changed:
                 matrix.loc[(dag, van, tot, regel), col] = "\n".join(names_existing)
 
     if debug:
-        st.info(f"Overrides toegepast: {applied_count} vervangen, {added_count} toegevoegd")
+        debug_lines.append(
+            f"Overrides toegepast ({location}): {applied_count} vervangen, {added_count} toegevoegd"
+        )
 
+    return debug_lines
+    
+    
 def month_short_nl(m:int) -> str:
     return ["jan","feb","mrt","apr","mei","jun","jul","aug","sept","okt","nov","dec"][m-1]
 
@@ -1446,9 +1458,12 @@ def make_excel(df_bar, df_ck, annotations,
     if use_overrides:
         overrides, override_warnings, override_error, override_debug = load_afgeschermd_overrides_from_dropbox(debug_fetch)
     
-        apply_afgeschermd_overrides(matrix_bar, overrides, "bar", WEEK_LABEL, debug_fetch)
-        apply_afgeschermd_overrides(matrix_ck, overrides, "ck", WEEK_LABEL, debug_fetch)
-        
+        override_debug.extend(
+            apply_afgeschermd_overrides(matrix_bar, overrides, "bar", WEEK_LABEL, debug_fetch)
+        )
+        override_debug.extend(
+            apply_afgeschermd_overrides(matrix_ck, overrides, "ck", WEEK_LABEL, debug_fetch)
+        )        
         
     # ===== Handmatige input vullen =====
     fill_manual(matrix_bar, annotations, merged_slots, WEEK_LABEL)
