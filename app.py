@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*--
 # ===== versie =======================
 #
-__version__ = "3.4.9.3b"
+__version__ = "3.4.9.3c"
 # Stap 3b refactor 
 #
 # ====================================
@@ -483,12 +483,13 @@ def build_program_url(days: int, client_id: str, fields: str = PROGRAM_FIELDS,
         url += f"&fields={quote(fields)}"
     return url
 
-def http_get_json(url: str):
-
+def http_get_json(url: str, debug: bool = False):
     headers = {
         "User-Agent": "CKC-Rooster/Streamlit",
         "Accept": "application/json"
     }
+
+    debug_lines = []
 
     # taakcode of endpoint uit URL halen
     task_code = None
@@ -505,6 +506,9 @@ def http_get_json(url: str):
         elif "programma" in parsed.path:
             endpoint = "programma"
 
+        elif "verenigingsactiviteiten" in parsed.path:
+            endpoint = "verenigingsactiviteiten"
+
     except Exception:
         pass
 
@@ -512,16 +516,16 @@ def http_get_json(url: str):
     sportlink_stats["calls"] += 1
 
     for attempt in range(1, max_retries + 1):
-
         try:
-
-            if debug_fetch:
-
+            if debug:
                 if endpoint == "vrijwilligers":
-                    st.write(f"Fetching vrijwilligers code {task_code} (poging {attempt})")
-
+                    debug_lines.append(
+                        f"Fetching vrijwilligers code {task_code} (poging {attempt})"
+                    )
                 else:
-                    st.write(f"Fetching {endpoint} (poging {attempt})")
+                    debug_lines.append(
+                        f"Fetching {endpoint} (poging {attempt})"
+                    )
 
             r = session.get(
                 url,
@@ -532,9 +536,12 @@ def http_get_json(url: str):
             r.raise_for_status()
 
             if not r.content:
-                if debug_fetch:
-                    st.warning(f"⚠️ Lege response ({endpoint} {task_code})")
-                return []
+                if debug:
+                    if endpoint == "vrijwilligers":
+                        debug_lines.append(f"⚠️ Lege response ({endpoint} {task_code})")
+                    else:
+                        debug_lines.append(f"⚠️ Lege response ({endpoint})")
+                return [], debug_lines
 
             data = r.json()
 
@@ -542,15 +549,19 @@ def http_get_json(url: str):
                 data = data.get("items", [])
 
             if not isinstance(data, list):
-                return []
+                return [], debug_lines
 
-            if debug_fetch:
+            if debug:
                 if endpoint == "vrijwilligers":
-                    st.write(f"✔ {len(data)} records ontvangen voor code {task_code}")
+                    debug_lines.append(f"✔ {len(data)} records ontvangen voor code {task_code}")
+                elif endpoint == "programma":
+                    debug_lines.append(f"✔ {len(data)} wedstrijden ontvangen")
+                elif endpoint == "verenigingsactiviteiten":
+                    debug_lines.append(f"✔ {len(data)} activiteiten ontvangen")
                 else:
-                    st.write(f"✔ {len(data)} wedstrijden ontvangen")
+                    debug_lines.append(f"✔ {len(data)} records ontvangen")
 
-            return data
+            return data, debug_lines
 
         except (
             requests.exceptions.ConnectionError,
@@ -559,16 +570,14 @@ def http_get_json(url: str):
             requests.exceptions.ContentDecodingError,
             requests.exceptions.HTTPError,
             ValueError
-        ) as e:
-
-            if debug_fetch:
-
+        ):
+            if debug:
                 if endpoint == "vrijwilligers":
-                    st.warning(
+                    debug_lines.append(
                         f"⚠️ Netwerkfout code {task_code} ({attempt}/{max_retries})"
                     )
                 else:
-                    st.warning(
+                    debug_lines.append(
                         f"⚠️ Netwerkfout {endpoint} ({attempt}/{max_retries})"
                     )
 
@@ -576,31 +585,39 @@ def http_get_json(url: str):
                 sportlink_stats["retries"] += 1
                 time.sleep(1.5)
             else:
+                sportlink_stats["failures"] += 1
 
-                if debug_fetch:
-
+                if debug:
                     if endpoint == "vrijwilligers":
-                        st.error(f"❌ Ophalen mislukt voor vrijwilligers code {task_code}")
-
+                        debug_lines.append(
+                            f"❌ Ophalen mislukt voor vrijwilligers code {task_code}"
+                        )
                     else:
-                        st.error(f"❌ Ophalen mislukt voor {endpoint}")
-                        
-                    sportlink_stats["failures"] += 1
+                        debug_lines.append(
+                            f"❌ Ophalen mislukt voor {endpoint}"
+                        )
 
-                return []
+                return [], debug_lines
+
 
 from concurrent.futures import ThreadPoolExecutor
 from itertools import chain
 
 @st.cache_data(ttl=300)
 def fetch_all(urls: List[str], debug: bool = False):
-
     results = []
+    all_debug_lines = []
 
     with ThreadPoolExecutor(max_workers=10) as exe:
-        fetched = list(exe.map(http_get_json, urls))
+        fetched = list(exe.map(lambda u: http_get_json(u, debug), urls))
 
-    for url, r in zip(urls, fetched):
+    for url, result in zip(urls, fetched):
+        if isinstance(result, tuple) and len(result) == 2:
+            r, debug_lines = result
+        else:
+            r, debug_lines = [], []
+
+        all_debug_lines.extend(debug_lines)
 
         task_code = None
         endpoint = "onbekend"
@@ -617,15 +634,14 @@ def fetch_all(urls: List[str], debug: bool = False):
             pass
 
         if debug:
-
             if endpoint == "vrijwilligers":
-                st.write(f"✔ vrijwilligers code {task_code}: {len(r)} records")
+                all_debug_lines.append(f"✔ vrijwilligers code {task_code}: {len(r)} records")
             else:
-                st.write(f"✔ {endpoint}: {len(r)} records")
+                all_debug_lines.append(f"✔ {endpoint}: {len(r)} records")
 
         results.append(r if isinstance(r, list) else [])
 
-    return list(chain.from_iterable(results))
+    return list(chain.from_iterable(results)), all_debug_lines
     
 def _pick(colnames, candidates):
     for c in candidates:
@@ -1397,11 +1413,13 @@ def make_excel(df_bar, df_ck, annotations,
 
     slot_warnings = []
     placement_warnings = []
+    fetch_debug_lines = []
 
     # ===== Activiteiten ophalen / normaliseren =====
     if use_activities or add_activities_sheet:
         activities_url = build_activities_url(ACTIVITIES_DAYS_AHEAD, DEFAULT_CLIENT_ID)
-        activities_json = http_get_json(activities_url)
+        activities_json, activities_fetch_debug = http_get_json(activities_url, debug_fetch)
+        fetch_debug_lines.extend(activities_fetch_debug)
 
         df_activities = normalize_activities(activities_json, TZ)
         df_activities = filter_from_current_week(df_activities, TZ)
@@ -1480,7 +1498,8 @@ def make_excel(df_bar, df_ck, annotations,
             uit="NEE",
             gebruiklokaleteamgegevens="NEE"
         )
-        program_json = http_get_json(program_url)
+        program_json, program_fetch_debug = http_get_json(program_url, debug_fetch)
+        fetch_debug_lines.extend(program_fetch_debug)
         df_program = normalize_program(program_json, TZ)
         df_program = filter_from_current_week(df_program, TZ)
 
@@ -1532,7 +1551,15 @@ def make_excel(df_bar, df_ck, annotations,
             )
 
     bio.seek(0)
-    return bio, slot_warnings, placement_warnings, override_warnings, override_error, override_debug
+    return (
+        bio,
+        slot_warnings,
+        placement_warnings,
+        override_warnings,
+        override_error,
+        override_debug,
+        fetch_debug_lines
+    )
 
 # =========================
 # UI (simpel)
@@ -1567,8 +1594,15 @@ if st.button("Genereer rooster", use_container_width=True):
             urls_bar = build_urls(BAR_CODES, DAYS_AHEAD, DEFAULT_CLIENT_ID, weekoffset=WEEK_OFFSET, fields=FIELDS)
             urls_ck  = build_urls(CK_CODES,  DAYS_AHEAD, DEFAULT_CLIENT_ID, weekoffset=WEEK_OFFSET, fields=FIELDS)
                         
-            all_bar = fetch_all(urls_bar, debug_fetch)
-            all_ck  = fetch_all(urls_ck, debug_fetch)
+            all_bar, fetch_debug_bar = fetch_all(urls_bar, debug_fetch)
+            all_ck, fetch_debug_ck = fetch_all(urls_ck, debug_fetch)
+            
+            fetch_debug_lines = []
+            fetch_debug_lines.extend(fetch_debug_bar)
+            fetch_debug_lines.extend(fetch_debug_ck)
+            
+            df_bar = filter_from_current_week(normalize_dataframe(all_bar, TZ), TZ)
+            df_ck  = filter_from_current_week(normalize_dataframe(all_ck,  TZ), TZ)
             
             df_bar = filter_from_current_week(normalize_dataframe(all_bar, TZ), TZ)
             df_ck  = filter_from_current_week(normalize_dataframe(all_ck,  TZ), TZ)
@@ -1587,7 +1621,7 @@ if st.button("Genereer rooster", use_container_width=True):
             annotations = parse_manual_text(manual_text)
                 
             # Excel bouwen (met/zonder wedstrijden) + waarschuwingen
-            xlsx, slot_warnings, placement_warnings, override_warnings, override_error, override_debug = make_excel(
+            xlsx, slot_warnings, placement_warnings, override_warnings, override_error, override_debug, make_excel_fetch_debug = make_excel(
                 df_bar,
                 df_ck,
                 annotations,
@@ -1596,7 +1630,8 @@ if st.button("Genereer rooster", use_container_width=True):
                 use_activities=use_activities,
                 add_activities_sheet=add_activities_sheet
             )
-
+            
+            fetch_debug_lines.extend(make_excel_fetch_debug)
 
 
         # Waarschuwingen tonen (als aanwezig)
@@ -1619,6 +1654,10 @@ if st.button("Genereer rooster", use_container_width=True):
             for msg in override_debug:
                 st.write(msg)
                    
+        if debug_fetch and fetch_debug_lines:
+            for msg in fetch_debug_lines:
+                st.write(msg)
+        
         calls = sportlink_stats["calls"]
                 
         retries = sportlink_stats["retries"]
