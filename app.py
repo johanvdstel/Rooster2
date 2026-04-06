@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*--
 # ===== versie =======================
 #
-__version__ = "3.4.9.3e"
-# Stap 3e refactor 
+__version__ = "3.4.9.4"
+# Stap 4 refactor 
 #
 # ====================================
 
@@ -54,11 +54,13 @@ BAR_CODES = ["701", "741", "761"]
 CK_CODES  = ["442"]
 WEEK_LABEL = "short"          # of "iso"
 SAT_ONLY_CK = True            # CommissieKamer alleen zaterdag
-sportlink_stats = {
-    "calls": 0,
-    "retries": 0,
-    "failures": 0
-}
+
+def new_sportlink_stats():
+    return {
+        "calls": 0,
+        "retries": 0,
+        "failures": 0
+    }
 
 # ===== Verenigingsactiviteiten =====
 ACTIVITIES_DAYS_AHEAD = 90
@@ -483,13 +485,16 @@ def build_program_url(days: int, client_id: str, fields: str = PROGRAM_FIELDS,
         url += f"&fields={quote(fields)}"
     return url
 
-def http_get_json(url: str, debug: bool = False):
+def http_get_json(url: str, debug: bool = False, stats: Optional[dict] = None):
     headers = {
         "User-Agent": "CKC-Rooster/Streamlit",
         "Accept": "application/json"
     }
 
     debug_lines = []
+
+    if stats is None:
+        stats = new_sportlink_stats()
 
     # taakcode of endpoint uit URL halen
     task_code = None
@@ -513,7 +518,7 @@ def http_get_json(url: str, debug: bool = False):
         pass
 
     max_retries = 4
-    sportlink_stats["calls"] += 1
+    stats["calls"] += 1
 
     for attempt in range(1, max_retries + 1):
         try:
@@ -582,10 +587,10 @@ def http_get_json(url: str, debug: bool = False):
                     )
 
             if attempt < max_retries:
-                sportlink_stats["retries"] += 1
+                stats["retries"] += 1
                 time.sleep(1.5)
             else:
-                sportlink_stats["failures"] += 1
+                stats["failures"] += 1
 
                 if debug:
                     if endpoint == "vrijwilligers":
@@ -604,12 +609,15 @@ from concurrent.futures import ThreadPoolExecutor
 from itertools import chain
 
 @st.cache_data(ttl=300)
-def fetch_all(urls: List[str], debug: bool = False):
+def fetch_all(urls: List[str], debug: bool = False, stats: Optional[dict] = None):
+    if stats is None:
+        stats = new_sportlink_stats()
+
     results = []
     all_debug_lines = []
 
     with ThreadPoolExecutor(max_workers=10) as exe:
-        fetched = list(exe.map(lambda u: http_get_json(u, debug), urls))
+        fetched = list(exe.map(lambda u: http_get_json(u, debug, stats), urls))
 
     for url, result in zip(urls, fetched):
         if isinstance(result, tuple) and len(result) == 2:
@@ -1405,12 +1413,16 @@ def make_excel(df_bar, df_ck, annotations,
                use_matches=True,
                use_overrides=True,
                use_activities=True,
-               add_activities_sheet=True):
+               add_activities_sheet=True,
+               stats: Optional[dict] = None):
+
+    if stats is None:
+        stats = new_sportlink_stats()
 
     df_activities = pd.DataFrame()
     activities_index = {}
     matrix_activities_calendar = None
-
+    
     slot_warnings = []
     placement_warnings = []
     fetch_debug_lines = []
@@ -1418,7 +1430,7 @@ def make_excel(df_bar, df_ck, annotations,
     # ===== Activiteiten ophalen / normaliseren =====
     if use_activities or add_activities_sheet:
         activities_url = build_activities_url(ACTIVITIES_DAYS_AHEAD, DEFAULT_CLIENT_ID)
-        activities_json, activities_fetch_debug = http_get_json(activities_url, debug_fetch)
+        activities_json, activities_fetch_debug = http_get_json(activities_url, debug_fetch, stats)
         fetch_debug_lines.extend(activities_fetch_debug)
 
         df_activities = normalize_activities(activities_json, TZ)
@@ -1498,7 +1510,7 @@ def make_excel(df_bar, df_ck, annotations,
             uit="NEE",
             gebruiklokaleteamgegevens="NEE"
         )
-        program_json, program_fetch_debug = http_get_json(program_url, debug_fetch)
+        program_json, program_fetch_debug = http_get_json(program_url, debug_fetch, stats)
         fetch_debug_lines.extend(program_fetch_debug)
         df_program = normalize_program(program_json, TZ)
         df_program = filter_from_current_week(df_program, TZ)
@@ -1590,7 +1602,8 @@ else:
 if st.button("Genereer rooster", use_container_width=True):
     try:
         with st.spinner("Ophalen en bouwen…"):
-            # ===== Debug-verzamelaars =====
+            # ===== lokale stats + debug-verzamelaars =====
+            sportlink_stats = new_sportlink_stats()
             fetch_debug_lines = []
 
             # ===== Vrijwilligersdata ophalen =====
@@ -1609,8 +1622,8 @@ if st.button("Genereer rooster", use_container_width=True):
                 fields=FIELDS
             )
 
-            all_bar, fetch_debug_bar = fetch_all(urls_bar, debug_fetch)
-            all_ck, fetch_debug_ck = fetch_all(urls_ck, debug_fetch)
+            all_bar, fetch_debug_bar = fetch_all(urls_bar, debug_fetch, sportlink_stats)
+            all_ck, fetch_debug_ck = fetch_all(urls_ck, debug_fetch, sportlink_stats)
 
             fetch_debug_lines.extend(fetch_debug_bar)
             fetch_debug_lines.extend(fetch_debug_ck)
@@ -1648,6 +1661,7 @@ if st.button("Genereer rooster", use_container_width=True):
                 use_overrides=use_overrides,
                 use_activities=use_activities,
                 add_activities_sheet=add_activities_sheet
+                stats=sportlink_stats
             )
 
             fetch_debug_lines.extend(make_excel_fetch_debug)
