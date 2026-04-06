@@ -1660,7 +1660,7 @@ if st.button("Genereer rooster", use_container_width=True):
                 use_matches=use_matches,
                 use_overrides=use_overrides,
                 use_activities=use_activities,
-                add_activities_sheet=add_activities_sheet
+                add_activities_sheet=add_activities_sheet,
                 stats=sportlink_stats
             )
 
