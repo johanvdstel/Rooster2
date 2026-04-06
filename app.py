@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*--
 # ===== versie =======================
 #
-__version__ = "3.4.9.3d"
-# Stap 3d refactor 
+__version__ = "3.4.9.3e"
+# Stap 3e refactor 
 #
 # ====================================
 
@@ -1678,7 +1678,6 @@ if st.button("Genereer rooster", use_container_width=True):
                 st.write(msg)
 
         # ===== Sportlink status =====
-        calls = sportlink_stats["calls"]
         retries = sportlink_stats["retries"]
         failures = sportlink_stats["failures"]
 
