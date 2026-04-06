@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*--
 # ===== versie =======================
 #
-__version__ = "3.4.9.3c"
-# Stap 3b refactor 
+__version__ = "3.4.9.3d"
+# Stap 3d refactor 
 #
 # ====================================
 
@@ -1590,38 +1590,57 @@ else:
 if st.button("Genereer rooster", use_container_width=True):
     try:
         with st.spinner("Ophalen en bouwen…"):
-            # Vrijwilligersdata
-            urls_bar = build_urls(BAR_CODES, DAYS_AHEAD, DEFAULT_CLIENT_ID, weekoffset=WEEK_OFFSET, fields=FIELDS)
-            urls_ck  = build_urls(CK_CODES,  DAYS_AHEAD, DEFAULT_CLIENT_ID, weekoffset=WEEK_OFFSET, fields=FIELDS)
-                        
+            # ===== Debug-verzamelaars =====
+            fetch_debug_lines = []
+
+            # ===== Vrijwilligersdata ophalen =====
+            urls_bar = build_urls(
+                BAR_CODES,
+                DAYS_AHEAD,
+                DEFAULT_CLIENT_ID,
+                weekoffset=WEEK_OFFSET,
+                fields=FIELDS
+            )
+            urls_ck = build_urls(
+                CK_CODES,
+                DAYS_AHEAD,
+                DEFAULT_CLIENT_ID,
+                weekoffset=WEEK_OFFSET,
+                fields=FIELDS
+            )
+
             all_bar, fetch_debug_bar = fetch_all(urls_bar, debug_fetch)
             all_ck, fetch_debug_ck = fetch_all(urls_ck, debug_fetch)
-            
-            fetch_debug_lines = []
+
             fetch_debug_lines.extend(fetch_debug_bar)
             fetch_debug_lines.extend(fetch_debug_ck)
-            
-            df_bar = filter_from_current_week(normalize_dataframe(all_bar, TZ), TZ)
-            df_ck  = filter_from_current_week(normalize_dataframe(all_ck,  TZ), TZ)
-            
-            df_bar = filter_from_current_week(normalize_dataframe(all_bar, TZ), TZ)
-            df_ck  = filter_from_current_week(normalize_dataframe(all_ck,  TZ), TZ)
 
-            # Handmatige input
+            # ===== Vrijwilligersdata normaliseren / filteren =====
+            df_bar = filter_from_current_week(normalize_dataframe(all_bar, TZ), TZ)
+            df_ck = filter_from_current_week(normalize_dataframe(all_ck, TZ), TZ)
+
+            # ===== Handmatige input ophalen =====
             manual_text = ""
             if use_dropbox:
                 direct = _ensure_dropbox_direct(DROPBOX_INPUT_URL)
-                
                 try:
                     manual_text = session.get(direct, timeout=30).text
                 except Exception:
                     manual_text = ""
-                    st.warning("Dropbox handmatige input kon niet worden opgehaald.")                   
-            
+                    st.warning("Dropbox handmatige input kon niet worden opgehaald.")
+
             annotations = parse_manual_text(manual_text)
-                
-            # Excel bouwen (met/zonder wedstrijden) + waarschuwingen
-            xlsx, slot_warnings, placement_warnings, override_warnings, override_error, override_debug, make_excel_fetch_debug = make_excel(
+
+            # ===== Excel bouwen =====
+            (
+                xlsx,
+                slot_warnings,
+                placement_warnings,
+                override_warnings,
+                override_error,
+                override_debug,
+                make_excel_fetch_debug
+            ) = make_excel(
                 df_bar,
                 df_ck,
                 annotations,
@@ -1630,36 +1649,36 @@ if st.button("Genereer rooster", use_container_width=True):
                 use_activities=use_activities,
                 add_activities_sheet=add_activities_sheet
             )
-            
+
             fetch_debug_lines.extend(make_excel_fetch_debug)
 
-
-        # Waarschuwingen tonen (als aanwezig)
+        # ===== Functionele meldingen =====
         if slot_warnings:
             st.info("ℹ️ Tijdsloten automatisch toegevoegd:\n\n- " + "\n- ".join(slot_warnings))
-        
+
         if placement_warnings:
             st.warning("⚠️ Niet alle diensten konden worden geplaatst:\n\n- " + "\n- ".join(placement_warnings))
-        
+
         if override_warnings:
             st.warning(
                 "⚠️ Ongeldige override regels overgeslagen:\n\n- " +
                 "\n- ".join(override_warnings)
             )
-        
+
         if override_error:
             st.error(override_error)
-        
+
+        # ===== Debug-meldingen =====
         if debug_fetch and override_debug:
             for msg in override_debug:
                 st.write(msg)
-                   
+
         if debug_fetch and fetch_debug_lines:
             for msg in fetch_debug_lines:
                 st.write(msg)
-        
+
+        # ===== Sportlink status =====
         calls = sportlink_stats["calls"]
-                
         retries = sportlink_stats["retries"]
         failures = sportlink_stats["failures"]
 
@@ -1670,6 +1689,7 @@ if st.button("Genereer rooster", use_container_width=True):
         else:
             st.success("Sportlink status: OK")
 
+        # ===== Download =====
         st.success("Klaar! Download hieronder het Excel-bestand.")
         st.download_button(
             "⬇️ Download rooster.xlsx",
@@ -1678,6 +1698,7 @@ if st.button("Genereer rooster", use_container_width=True):
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
+
     except requests.HTTPError as e:
         st.error(f"Fout bij ophalen gegevens: {e}")
     except Exception as e:
