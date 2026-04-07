@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*--
 # ===== versie =======================
 #
-__version__ = "3.4.9.5a"
+__version__ = "3.4.9.5b"
 # refactor 
 #
 # ====================================
@@ -1317,6 +1317,42 @@ def build_activities_overlap_index(df: pd.DataFrame) -> Dict[tuple, List[Tuple[i
 
     return idx
 
+
+def prepare_activities(use_activities: bool,
+                       add_activities_sheet: bool,
+                       tz_str: str,
+                       debug: bool = False,
+                       stats: Optional[dict] = None):
+    if stats is None:
+        stats = new_sportlink_stats()
+
+    df_activities = pd.DataFrame()
+    activities_overlap_index = {}
+    fetch_debug_lines = []
+
+    if not (use_activities or add_activities_sheet):
+        return df_activities, activities_overlap_index, fetch_debug_lines
+
+    activities_url = build_activities_url(
+        ACTIVITIES_DAYS_AHEAD,
+        DEFAULT_CLIENT_ID
+    )
+
+    activities_json, activities_fetch_debug = http_get_json(
+        activities_url,
+        debug,
+        stats
+    )
+    fetch_debug_lines.extend(activities_fetch_debug)
+
+    df_activities = normalize_activities(activities_json, tz_str)
+    df_activities = filter_from_current_week(df_activities, tz_str)
+
+    if not df_activities.empty:
+        activities_overlap_index = build_activities_overlap_index(df_activities)
+
+    return df_activities, activities_overlap_index, fetch_debug_lines
+
 # ===== Handmatige input (.txt) =====
 def parse_manual_text(text: str):
     entries = []
@@ -1410,6 +1446,8 @@ def build_roster_matrix(
         week_mondays=week_mondays,
     )
 
+
+
 # ===== Excel bouwen =====
 def make_excel(df_bar, df_ck, annotations,
                use_matches=True,
@@ -1429,18 +1467,16 @@ def make_excel(df_bar, df_ck, annotations,
     placement_warnings = []
     fetch_debug_lines = []
 
-    # ===== Activiteiten ophalen / normaliseren =====
-    if use_activities or add_activities_sheet:
-        activities_url = build_activities_url(ACTIVITIES_DAYS_AHEAD, DEFAULT_CLIENT_ID)
-        activities_json, activities_fetch_debug = http_get_json(activities_url, debug_fetch, stats)
-        fetch_debug_lines.extend(activities_fetch_debug)
-
-        df_activities = normalize_activities(activities_json, TZ)
-        df_activities = filter_from_current_week(df_activities, TZ)
-
-        if not df_activities.empty:
-            activities_overlap_index = build_activities_overlap_index(df_activities)
-
+    # ===== Activiteiten voorbereiden =====
+    df_activities, activities_overlap_index, activities_fetch_debug = prepare_activities(
+        use_activities=use_activities,
+        add_activities_sheet=add_activities_sheet,
+        tz_str=TZ,
+        debug=debug_fetch,
+        stats=stats
+    )
+    fetch_debug_lines.extend(activities_fetch_debug)
+    
     # ===== Slots één keer opbouwen =====
     merged_slots, slot_warnings = merge_custom_slots_into_defaults(
         [df_bar, df_ck],
