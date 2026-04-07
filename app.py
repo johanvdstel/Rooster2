@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*--
 # ===== versie =======================
 #
-__version__ = "3.4.9.4"
-# Stap 4 refactor 
+__version__ = "3.4.9.5a"
+# refactor 
 #
 # ====================================
 
@@ -117,6 +117,7 @@ DROPBOX_OVERRIDE_URL = "https://www.dropbox.com/scl/fi/w1711x6bzna5lniz0cvkw/Afg
 # ---------- helpers ----------
 # ------ build activities calendar -------
 
+# Activiteiten-matrix voor aparte kalender-sheet
 def build_activities_calendar_matrix(df_activities):
     import pandas as pd
 
@@ -1046,12 +1047,12 @@ def fill_matches(
     match_index,
     week_label_style: str,
     slots: Dict[str, List[Tuple[str,str]]],
-    activities_index: Optional[Dict[tuple, List[Tuple[int, str]]]] = None
+    activities_overlap_index: Optional[Dict[tuple, List[Tuple[int, str]]]] = None
 ):
     cols = list(matrix.columns)
     
-    if activities_index is None:
-        activities_index = {}
+    if activities_overlap_index is None:
+        activities_overlap_index = {}
 
     for (d, van, tot, regel) in matrix.index:
         if not (van and tot and regel == "Wedstrijden"):
@@ -1076,7 +1077,7 @@ def fill_matches(
                 y = now_naive_in_tz(TZ).isocalendar().year
 
             matches = match_index.get((y, w, d), [])
-            activities = activities_index.get((y, w, d), [])
+            activities = activities_overlap_index.get((y, w, d), [])
 
             if not matches and not activities:
                 continue
@@ -1296,7 +1297,8 @@ def normalize_activities(data, tz_str: str) -> pd.DataFrame:
 
     return df[["Datum","Dag","Tijd","ISO_Year","Week","Activiteit","Date","IsAllDay"]]
 
-def build_activities_index(df: pd.DataFrame) -> Dict[tuple, List[Tuple[int, str]]]:
+# Activiteiten-index voor overlap in Bar/CK roosterregels
+def build_activities_overlap_index(df: pd.DataFrame) -> Dict[tuple, List[Tuple[int, str]]]:
     idx: Dict[tuple, List[Tuple[int, str]]] = {}
 
     for _, r in df.iterrows():
@@ -1420,7 +1422,7 @@ def make_excel(df_bar, df_ck, annotations,
         stats = new_sportlink_stats()
 
     df_activities = pd.DataFrame()
-    activities_index = {}
+    activities_overlap_index = {}
     matrix_activities_calendar = None
     
     slot_warnings = []
@@ -1437,7 +1439,7 @@ def make_excel(df_bar, df_ck, annotations,
         df_activities = filter_from_current_week(df_activities, TZ)
 
         if not df_activities.empty:
-            activities_index = build_activities_index(df_activities)
+            activities_overlap_index = build_activities_overlap_index(df_activities)
 
     # ===== Slots één keer opbouwen =====
     merged_slots, slot_warnings = merge_custom_slots_into_defaults(
@@ -1517,9 +1519,9 @@ def make_excel(df_bar, df_ck, annotations,
 
         match_index = build_match_index_for_overlap(df_program)
 
-        fill_matches(matrix_bar, match_index, WEEK_LABEL, merged_slots, activities_index)
-        fill_matches(matrix_ck, match_index, WEEK_LABEL, merged_slots, activities_index)
-
+        fill_matches(matrix_bar, match_index, WEEK_LABEL, merged_slots, activities_overlap_index)
+        fill_matches(matrix_ck, match_index, WEEK_LABEL, merged_slots, activities_overlap_index)
+    
     # ===== Lege subregels opruimen =====
     matrix_bar = prune_empty_subrows(matrix_bar)
     matrix_ck = prune_empty_subrows(matrix_ck)
