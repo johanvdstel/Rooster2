@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*--
 # ===== versie =======================
 #
-__version__ = "3.4.9.5b"
+__version__ = "3.4.9.5c"
 # refactor 
 #
 # ====================================
@@ -1042,15 +1042,22 @@ def build_match_index_for_overlap(df_program: pd.DataFrame) -> Dict[tuple, List[
             idx.setdefault((y, w, d), []).append((tmin, team))
     return idx
 
-def fill_matches(
+def fill_schedule_items(
     matrix: pd.DataFrame,
     match_index,
     week_label_style: str,
     slots: Dict[str, List[Tuple[str,str]]],
     activities_overlap_index: Optional[Dict[tuple, List[Tuple[int, str]]]] = None
 ):
+    """
+    Vul de 'Wedstrijden'-regels van de matrix met:
+    - thuiswedstrijden uit match_index
+    - verenigingsactiviteiten uit activities_overlap_index
+
+    Beide worden gegroepeerd per aanvangstijd binnen het betreffende tijdslot.
+    """
     cols = list(matrix.columns)
-    
+
     if activities_overlap_index is None:
         activities_overlap_index = {}
 
@@ -1076,27 +1083,25 @@ def fill_matches(
                     continue
                 y = now_naive_in_tz(TZ).isocalendar().year
 
-            matches = match_index.get((y, w, d), [])
+            match_items = match_index.get((y, w, d), [])
             activities = activities_overlap_index.get((y, w, d), [])
 
-            if not matches and not activities:
+            if not match_items and not activities:
                 continue
-                
-            # 🔹 groepeer per tijd
+
             grouped = {}
 
-            for tmin, team in matches:
+            for tmin, team in match_items:
                 if v_from <= tmin < v_to:
                     grouped.setdefault(tmin, []).append(team)
-            
+
             for tmin, act in activities:
                 if v_from <= tmin < v_to:
                     grouped.setdefault(tmin, []).append(act)
-            
+
             if not grouped:
                 continue
-            
-            # 🔹 sorteer tijden
+
             lines = []
             for tmin in sorted(grouped.keys()):
                 hh = tmin // 60
@@ -1110,6 +1115,7 @@ def fill_matches(
             key = (d, van, tot, "Wedstrijden")
             if key in matrix.index:
                 matrix.loc[key, label] = text
+
 
 def prune_empty_subrows(matrix: pd.DataFrame) -> pd.DataFrame:
     """Verwijder lege subregels, behalve:
@@ -1553,10 +1559,22 @@ def make_excel(df_bar, df_ck, annotations,
         df_program = normalize_program(program_json, TZ)
         df_program = filter_from_current_week(df_program, TZ)
 
-        match_index = build_match_index_for_overlap(df_program)
+        match_overlap_index = build_match_index_for_overlap(df_program)
 
-        fill_matches(matrix_bar, match_index, WEEK_LABEL, merged_slots, activities_overlap_index)
-        fill_matches(matrix_ck, match_index, WEEK_LABEL, merged_slots, activities_overlap_index)
+        fill_schedule_items(
+            matrix_bar,
+            match_overlap_index,
+            WEEK_LABEL,
+            merged_slots,
+            activities_overlap_index
+        )
+        fill_schedule_items(
+            matrix_ck,
+            match_overlap_index,
+            WEEK_LABEL,
+            merged_slots,
+            activities_overlap_index
+        )  
     
     # ===== Lege subregels opruimen =====
     matrix_bar = prune_empty_subrows(matrix_bar)
