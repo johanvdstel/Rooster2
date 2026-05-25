@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*--
 # ===== versie =======================
 #
-__version__ = "3.4.9.5c"
-# refactor 
+__version__ = "3.4.9.5c.acc"
+# refactor en sel op accomodatie
 #
 # ====================================
 
@@ -79,9 +79,13 @@ def build_activities_url(days: int, client_id: str, fields: str = ACTIVITIES_FIE
 
 # Wedstrijden (programma)
 PROGRAM_DAYS_AHEAD = 60
-PROGRAM_FIELDS = ("wedstrijddatum,wedstrijdnummer,thuisteamclubrelatiecode,"
-                  "uitteamclubrelatiecode,thuisteam,uitteam,competitiesoort,aanvangstijd")
-CKC_CLUBRELATIECODE = "BBDZ08H"
+PROGRAM_FIELDS = (
+    "wedstrijddatum,wedstrijdnummer,thuisteamclubrelatiecode,"
+    "uitteamclubrelatiecode,thuisteam,uitteam,competitiesoort,"
+    "aanvangstijd,accommodatie"
+)
+
+CKC_ACCOMMODATIE = "Sportpark 't Veer"
 
 DAYS_NL = ["Maandag","Dinsdag","Woensdag","Donderdag","Vrijdag","Zaterdag","Zondag"]
 DAY_COLORS = {
@@ -1248,7 +1252,15 @@ def normalize_program(data, tz_str: str) -> pd.DataFrame:
     df = df.loc[mask_ok].copy()
     df["Datum"] = dt_local_naive.astype("datetime64[ns]")
 
-    df = df[df[c_home_code].astype(str) == CKC_CLUBRELATIECODE].copy()
+    c_accommodatie = _pick(df.columns, ["accommodatie"])
+
+    if c_accommodatie is None or c_accommodatie not in df.columns:
+        return empty
+    
+    df = df[
+        df[c_accommodatie].astype(str).str.strip().eq(CKC_ACCOMMODATIE)
+    ].copy()
+    
     if df.empty:
         return empty
 
@@ -1551,7 +1563,7 @@ def make_excel(df_bar, df_ck, annotations,
             PROGRAM_FIELDS,
             eigenwedstrijden="JA",
             thuis="JA",
-            uit="NEE",
+            uit="JA",
             gebruiklokaleteamgegevens="NEE"
         )
         program_json, program_fetch_debug = http_get_json(program_url, debug_fetch, stats)
