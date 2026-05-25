@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*--
 # ===== versie =======================
 #
-__version__ = "3.4.9.5c.acc2"
+__version__ = "3.4.9.5c.acc3"
 # refactor en sel op accomodatie
 #
 # ====================================
@@ -85,6 +85,7 @@ PROGRAM_FIELDS = (
     "aanvangstijd,accommodatie"
 )
 
+CKC_CLUBRELATIECODE = "BBDZ08H"
 CKC_ACCOMMODATIE = "Sportpark 't Veer"
 
 DAYS_NL = ["Maandag","Dinsdag","Woensdag","Donderdag","Vrijdag","Zaterdag","Zondag"]
