@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*--
 # ===== versie =======================
 #
-__version__ = "3.4.9.5c.acc"
+__version__ = "3.4.9.5c.acc2"
 # refactor en sel op accomodatie
 #
 # ====================================
@@ -1239,7 +1239,12 @@ def normalize_program(data, tz_str: str) -> pd.DataFrame:
     c_date = _pick(df.columns, ["wedstrijddatum"])
     c_home = _pick(df.columns, ["thuisteam"])
     c_home_code = _pick(df.columns, ["thuisteamclubrelatiecode"])
-    for col in (c_date, c_home, c_home_code):
+    
+    c_away = _pick(df.columns, ["uitteam"])
+    c_away_code = _pick(df.columns, ["uitteamclubrelatiecode"])
+    c_accommodatie = _pick(df.columns, ["accommodatie"])
+    
+    for col in (c_date, c_home, c_home_code, c_away, c_away_code, c_accommodatie):
         if col is None or col not in df.columns:
             return empty
 
@@ -1269,7 +1274,22 @@ def normalize_program(data, tz_str: str) -> pd.DataFrame:
     iso = df["Datum"].dt.isocalendar()
     df["ISO_Year"] = iso.year.astype(int)
     df["Week"] = iso.week.astype(int)
-    df["HomeTeam"] = df[c_home].astype(str).map(_strip_ckc_prefix)
+    
+    def pick_ckc_team(r):
+        home_is_ckc = str(r[c_home_code]).strip() == CKC_CLUBRELATIECODE
+        away_is_ckc = str(r[c_away_code]).strip() == CKC_CLUBRELATIECODE
+    
+        if home_is_ckc:
+            return _strip_ckc_prefix(str(r[c_home]))
+    
+        if away_is_ckc:
+            return _strip_ckc_prefix(str(r[c_away]))
+    
+        return ""
+    
+    df["HomeTeam"] = df.apply(pick_ckc_team, axis=1)
+    df = df[df["HomeTeam"].astype(str).str.strip() != ""].copy()
+    
     return df[["Datum","Dag","Tijd","ISO_Year","Week","HomeTeam"]]
 
 # ====== normaliseer activiteiten ====
