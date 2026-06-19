@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*--
 # ===== versie =======================
 #
-__version__ = "3.4.9.5c.acc3 FD"
-# refactor en sel op accomodatie
+__version__ = "3.4.9.5c.acc3 FD fix"
+# refactor en sel op accomodatie en bug fix
 #
 # ====================================
 
@@ -667,6 +667,13 @@ def _pick(colnames, candidates):
 
 def normalize_dataframe(data, tz_str: str):
     df_raw = pd.DataFrame(data)
+
+    if df_raw.empty:
+        return pd.DataFrame(columns=[
+            "Naam", "Datum vanaf", "Datum tot", "Tijd vanaf", "Tijd tot",
+            "Datum", "Week", "ISO_Year", "Weekdag_num", "Dag"
+        ])
+
     cols = df_raw.columns.tolist()
 
     c_naam = _pick(cols, ["Naam","naam","Vrijwilliger","vrijwilliger","vrijwilligerNaam","displayName"])
@@ -683,12 +690,14 @@ def normalize_dataframe(data, tz_str: str):
         tmp2 = pd.to_datetime(df[c_dt], errors="coerce", utc=True)
         df["Tijd tot"] = tmp2.dt.tz_convert(tz_str).dt.strftime("%H:%M"); c_tt = "Tijd tot"
 
+    empty = pd.Series("", index=df.index)
+
     out = pd.DataFrame({
-        "Naam": df[c_naam] if c_naam else "",
-        "Datum vanaf": df[c_dv] if c_dv else "",
-        "Datum tot": df[c_dt] if c_dt else "",
-        "Tijd vanaf": df[c_tv] if c_tv else "",
-        "Tijd tot": df[c_tt] if c_tt else "",
+        "Naam": df[c_naam] if c_naam else empty,
+        "Datum vanaf": df[c_dv] if c_dv else empty,
+        "Datum tot": df[c_dt] if c_dt else empty,
+        "Tijd vanaf": df[c_tv] if c_tv else empty,
+        "Tijd tot": df[c_tt] if c_tt else empty,
     })
 
     dat = pd.to_datetime(out["Datum vanaf"], errors="coerce", utc=True)
