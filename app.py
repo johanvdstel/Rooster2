@@ -2,39 +2,42 @@
 # -*- coding: utf-8 -*--
 # ===== versie =======================
 #
-__version__ = "3.4.9.5c.acc3 FD fix"
-# refactor en sel op accomodatie en bug fix
+__version__ = "3.5.0"
+# herstructurering van de code
 #
 # ====================================
 
+# ====================================
+# Versie / imports
+# ====================================
+
 import io
+import time
 import warnings
-from typing import List, Dict, Tuple, Optional
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from itertools import chain
+from typing import Dict, List, Optional, Tuple
+from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 import pandas as pd
 import requests
 import streamlit as st
-import time
-from datetime import datetime
-from urllib.parse import quote, urlparse, parse_qs, urlencode, urlunparse
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 
-# ===== tijdzone helpers =====
 try:
     from zoneinfo import ZoneInfo  # Python 3.9+
 except Exception:  # pragma: no cover
     from backports.zoneinfo import ZoneInfo
 
+
+# ====================================
+# Runtime setup
+# ====================================
+
 session = requests.Session()
 
-def now_naive_in_tz(tz_str: str) -> pd.Timestamp:
-    return pd.Timestamp(datetime.now(ZoneInfo(tz_str))).tz_localize(None)
-
-def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
-    return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
-
-
-# ===== warnings onderdrukken (macOS LibreSSL/urllib3) =====
 warnings.filterwarnings(
     "ignore",
     message=r"urllib3 v2 only supports OpenSSL.*",
@@ -42,7 +45,11 @@ warnings.filterwarnings(
     module=r"urllib3\.__init__"
 )
 
-# === VASTE INSTELLINGEN ===
+
+# ====================================
+# Vaste instellingen / constants
+# ====================================
+
 debug_fetch = False
 DEFAULT_CLIENT_ID = "K662D1WXrt"
 TZ = "Europe/Amsterdam"
@@ -51,33 +58,16 @@ WEEK_OFFSET = -1
 FIELDS = "naam,datumvanaf,datumtot,tijdvanaf,tijdtot,lokatie,heledag"
 
 BAR_CODES = ["701", "741", "761"]
-CK_CODES  = ["442"]
+CK_CODES = ["442"]
 WEEK_LABEL = "short"          # of "iso"
 SAT_ONLY_CK = True            # CommissieKamer alleen zaterdag
 
-def new_sportlink_stats():
-    return {
-        "calls": 0,
-        "retries": 0,
-        "failures": 0
-    }
-
-# ===== Verenigingsactiviteiten =====
 ACTIVITIES_DAYS_AHEAD = 90
-
 ACTIVITIES_FIELDS = (
     "kalendernaam,kalendersoort,activiteit,datumvan,datumtm,"
     "heledag,beheerders,opmerkingen,plaats,url"
 )
 
-def build_activities_url(days: int, client_id: str, fields: str = ACTIVITIES_FIELDS) -> str:
-    base = "https://data.sportlink.com/verenigingsactiviteiten"
-    url = f"{base}?aantaldagen={int(days)}&client_id={client_id}"
-    if fields:
-        url += f"&fields={quote(fields)}"
-    return url
-
-# Wedstrijden (programma)
 PROGRAM_DAYS_AHEAD = 60
 PROGRAM_FIELDS = (
     "wedstrijddatum,wedstrijdnummer,thuisteamclubrelatiecode,"
@@ -88,10 +78,15 @@ PROGRAM_FIELDS = (
 CKC_CLUBRELATIECODE = "BBDZ08H"
 CKC_ACCOMMODATIE = "Sportpark 't Veer"
 
-DAYS_NL = ["Maandag","Dinsdag","Woensdag","Donderdag","Vrijdag","Zaterdag","Zondag"]
+DAYS_NL = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
 DAY_COLORS = {
-    "Maandag":"FFDDEBF7","Dinsdag":"FFE2EFDA","Woensdag":"FFFFF2CC",
-    "Donderdag":"FFFCE4D6","Vrijdag":"FFE7E6E6","Zaterdag":"FFE4DFEC","Zondag":"FFF8CBAD"
+    "Maandag": "FFDDEBF7",
+    "Dinsdag": "FFE2EFDA",
+    "Woensdag": "FFFFF2CC",
+    "Donderdag": "FFFCE4D6",
+    "Vrijdag": "FFE7E6E6",
+    "Zaterdag": "FFE4DFEC",
+    "Zondag": "FFF8CBAD",
 }
 WEEK_COLORS = [
     "D9E1F2",  # licht blauw
@@ -101,372 +96,87 @@ WEEK_COLORS = [
     "FFF2CC",  # licht geel
 ]
 
-# Shifts per dag: (Tijd-van, Tijd-tot)
 DEFAULT_SLOTS: Dict[str, List[Tuple[str, str]]] = {
-    "Maandag":   [("18:00","19:00"), ("19:00","20:00"), ("20:00","22:30")],
-    "Dinsdag":   [("18:00","19:00"), ("19:00","20:00"), ("20:00","22:30")],
-    "Woensdag":  [("17:00","18:00"), ("18:00","19:00"), ("19:00","22:00")],
-    "Donderdag": [("18:00","19:00"), ("19:00","20:00"), ("20:00","22:30")],
-    "Vrijdag":   [("18:00","20:30"), ("20:30","23:00")],
-    "Zaterdag":  [("07:30","09:00"), ("09:00","12:00"),
-                  ("12:00","15:00"), ("15:00","18:00"),
-                  ("18:00","21:00"), ("21:00","23:30")],
-    "Zondag":    [("10:00","12:30"), ("12:30","15:00")],
+    "Maandag":   [("18:00", "19:00"), ("19:00", "20:00"), ("20:00", "22:30")],
+    "Dinsdag":   [("18:00", "19:00"), ("19:00", "20:00"), ("20:00", "22:30")],
+    "Woensdag":  [("17:00", "18:00"), ("18:00", "19:00"), ("19:00", "22:00")],
+    "Donderdag": [("18:00", "19:00"), ("19:00", "20:00"), ("20:00", "22:30")],
+    "Vrijdag":   [("18:00", "20:30"), ("20:30", "23:00")],
+    "Zaterdag":  [("07:30", "09:00"), ("09:00", "12:00"),
+                  ("12:00", "15:00"), ("15:00", "18:00"),
+                  ("18:00", "21:00"), ("21:00", "23:30")],
+    "Zondag":    [("10:00", "12:30"), ("12:30", "15:00")],
 }
 
-# Dropbox handmatige input
 DROPBOX_INPUT_URL = "https://www.dropbox.com/scl/fi/ukcs87y9h1j27uyzcotig/rooster_input.txt?rlkey=fx0ayzshabo7zikun620m61hh&st=vtrlzr8k&dl=0"
-
 DROPBOX_OVERRIDE_URL = "https://www.dropbox.com/scl/fi/w1711x6bzna5lniz0cvkw/Afgeschermd.txt?rlkey=cy3ltl3j427eqtg3k9ylwvc01&st=e6z7qa2n&dl=0"
 
-# ---------- helpers ----------
-# ------ build activities calendar -------
-
-# Activiteiten-matrix voor aparte kalender-sheet
-def build_activities_calendar_matrix(df_activities):
-    import pandas as pd
-
-    if df_activities.empty:
-        return pd.DataFrame()
-
-    df = df_activities.copy()
-
-    # 🔹 Gebruik jouw genormaliseerde kolommen
-    if "Date" not in df.columns:
-        raise ValueError(f"'Date' kolom ontbreekt: {df.columns}")
-
-    df["date"] = pd.to_datetime(df["Date"]).dt.date
-
-    # 🔹 Bouw tekst (tijd + activiteit)
-    if "Tijd" in df.columns:
-        df["text"] = df["Tijd"].astype(str) + " " + df["Activiteit"].astype(str)
-    else:
-        df["text"] = df["Activiteit"].astype(str)
-
-    # 🔹 Sorteer op datum + tijd (indien mogelijk)
-    if "Tijd" in df.columns:
-        df = df.sort_values(["date", "Tijd"])
-    else:
-        df = df.sort_values("date")
-
-    # 🔹 Groepeer per dag
-    grouped = df.groupby("date")["text"].apply(list)
-
-    # 🔹 Volledige datumrange (belangrijk voor 90 dagen!)
-    first_date = min(grouped.index)
-    last_date  = max(grouped.index)
-    
-    # 🔹 naar maandag van eerste week
-    start = first_date - pd.Timedelta(days=first_date.weekday())
-    
-    # 🔹 naar zondag van laatste week
-    end = last_date + pd.Timedelta(days=(6 - last_date.weekday()))
-    
-    all_dates = pd.date_range(start=start, end=end, freq="D")
-
-    # 🔹 Matrix met echte datetime kolommen
-    matrix = pd.DataFrame(index=[0], columns=all_dates)
-
-    for d in all_dates:
-        if d.date() in grouped:
-            matrix[d] = "\n".join(grouped[d.date()])
-        else:
-            matrix[d] = ""
-
-    # 🔹 Kolom A voor weeklabels
-    matrix.insert(0, "Week", "")
-
-    return matrix
+REGELS = ["Handmatig", "Wedstrijden", "Namen"]
 
 
-def format_activities_calendar_sheet(ws, df, TZ):
-    import pandas as pd
-    from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+# ====================================
+# Algemene helpers
+# ====================================
 
-    thin = Side(style="thin", color="000000")
-    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+def new_sportlink_stats():
+    return {
+        "calls": 0,
+        "retries": 0,
+        "failures": 0,
+    }
 
-    # ===== Vaste sheet-breedte: alleen A t/m H gebruiken =====
-    FIXED_MAX_COL = 8  # A + 7 weekdagen
 
-    # ===== Rij 1: vaste header =====
-    now = now_naive_in_tz(TZ)
+def now_naive_in_tz(tz_str: str) -> pd.Timestamp:
+    return pd.Timestamp(datetime.now(ZoneInfo(tz_str))).tz_localize(None)
 
-    # A1 = timestamp
-    ts_cell = ws.cell(row=1, column=1)
-    ts_cell.value = f"{now.day} {month_short_nl(now.month)} {now.strftime('%H:%M')}"
-    ts_cell.font = Font(italic=True, color="FF666666")
-    ts_cell.alignment = Alignment(horizontal="left", vertical="center")
 
-    # Vaste grijze header-fill voor weekdagen
-    header_fill = PatternFill(start_color="FFD9D9D9", end_color="FFD9D9D9", fill_type="solid")
+def now_aware_in_tz(tz_str: str) -> pd.Timestamp:
+    return pd.Timestamp(datetime.now(ZoneInfo(tz_str)))
 
-    # B1:H1 = weekdagen
-    for i, dag in enumerate(DAYS_NL, start=2):
-        c = ws.cell(row=1, column=i)
-        c.value = dag
-        c.font = Font(bold=True, size=15)
-        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        c.border = border
-        c.fill = header_fill
 
-    ws.row_dimensions[1].height = 26
+def month_short_nl(m: int) -> str:
+    return ["jan", "feb", "mrt", "apr", "mei", "jun", "jul", "aug", "sept", "okt", "nov", "dec"][m - 1]
 
-    # Kolombreedtes
-    ws.column_dimensions["A"].width = 14
-    for col in range(2, 9):  # B t/m H
-        from openpyxl.utils import get_column_letter
-        ws.column_dimensions[get_column_letter(col)].width = 28
 
-    # Echte datums uit dataframe
-    date_columns = list(df.columns[1:])
-
-    # Weken bepalen
-    activities_weeks = []
-    for d in date_columns:
-        iso = pd.Timestamp(d).isocalendar()
-        pair = (iso.year, iso.week)
-        if pair not in activities_weeks:
-            activities_weeks.append(pair)
-
-    row = 2
-    col_index = 0
-    week_index = 0
-
-    while col_index < len(date_columns):
-        header_row = row
-        data_row = row + 1
-
-        y, w = activities_weeks[week_index]
-        week_label = f"{y}-W{w:02d}"
-
-        color = WEEK_COLORS[week_index % len(WEEK_COLORS)]
-        week_fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
-
-        # Kolom A merge over 2 rijen
-        ws.merge_cells(start_row=header_row, start_column=1, end_row=data_row, end_column=1)
-
-        cell = ws.cell(row=header_row, column=1)
-        cell.value = week_label
-        cell.font = Font(bold=True)
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-        cell.fill = week_fill
-        cell.border = border
-
-        ws.cell(row=data_row, column=1).fill = week_fill
-        ws.cell(row=data_row, column=1).border = border
-
-        # B t/m H altijd exact 7 dagen
-        for i in range(7):
-            col = 2 + i
-            hcell = ws.cell(row=header_row, column=col)
-            dcell = ws.cell(row=data_row, column=col)
-
-            hcell.fill = week_fill
-            hcell.border = border
-            hcell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            hcell.font = Font(bold=True, size=13)
-
-            dcell.border = border
-            dcell.alignment = Alignment(vertical="top", wrap_text=True)
-
-            if col_index >= len(date_columns):
-                hcell.value = ""
-                dcell.value = ""
-                continue
-
-            d = pd.Timestamp(date_columns[col_index])
-            iso = d.isocalendar()
-
-            # Alleen vullen als datum in huidige week hoort
-            if (iso.year, iso.week) != (y, w):
-                hcell.value = ""
-                dcell.value = ""
-                continue
-
-            hcell.value = f"{d.day:02d} {month_short_nl(d.month)}"
-            dcell.value = df.iloc[0, col_index + 1]
-
-            col_index += 1
-
-        ws.row_dimensions[header_row].height = 24
-        ws.row_dimensions[data_row].height = 80
-
-        row += 2
-        week_index += 1
-
-    # Alles rechts van H leegmaken/verwijderen
-    extra_cols = ws.max_column - FIXED_MAX_COL
-    if extra_cols > 0:
-        ws.delete_cols(FIXED_MAX_COL + 1, extra_cols)
-
-    ws.freeze_panes = "B2"
-    
-def load_afgeschermd_overrides_from_dropbox(debug=False):
-    overrides = {}
-    warning_lines = []
-    debug_lines = []
-    error_message = None
-
+def _hhmm_to_minutes(hhmm: str) -> int:
     try:
-        url = _ensure_dropbox_direct(DROPBOX_OVERRIDE_URL)
-        txt = session.get(url, timeout=30).text
+        h, m = hhmm.split(":")
+        return int(h) * 60 + int(m)
+    except Exception:
+        return -1
 
-        for lineno, line in enumerate(txt.splitlines(), start=1):
-            raw = line.strip()
 
-            if not raw or raw.startswith("#"):
-                continue
+def _pick(colnames, candidates):
+    for c in candidates:
+        if c in colnames:
+            return c
+    lower = {c.lower(): c for c in colnames}
+    for c in candidates:
+        if c.lower() in lower:
+            return lower[c.lower()]
+    return None
 
-            parts = raw.split()
 
-            # basis check
-            if len(parts) < 4:
-                warning_lines.append(f"regel {lineno}: te weinig velden → '{raw}'")
-                continue
+def monday_of_week(d: pd.Timestamp) -> pd.Timestamp:
+    return d - pd.Timedelta(days=int(d.weekday()))
 
-            date_str, time_str, loc = parts[0], parts[1], parts[2].lower()
-            name = " ".join(parts[3:]).strip()
 
-            # datum validatie
-            try:
-                datetime.strptime(date_str, "%Y-%m-%d")
-            except Exception:
-                warning_lines.append(f"regel {lineno}: ongeldige datum → '{raw}'")
-                continue
+def _ensure_dropbox_direct(url: str) -> str:
+    if not url or "dropbox.com" not in url:
+        return url
+    try:
+        pr = urlparse(url)
+        qs = parse_qs(pr.query)
+        qs["dl"] = ["1"]
+        new_query = urlencode({k: v[0] for k, v in qs.items()})
+        return urlunparse((pr.scheme, pr.netloc, pr.path, pr.params, new_query, pr.fragment))
+    except Exception:
+        return url.replace("dl=0", "dl=1") if "dl=" in url else (url + ("&" if "?" in url else "?") + "dl=1")
 
-            # tijd validatie
-            try:
-                datetime.strptime(time_str, "%H:%M")
-            except Exception:
-                warning_lines.append(f"regel {lineno}: ongeldige tijd → '{raw}'")
-                continue
 
-            # locatie validatie
-            if loc not in ("bar", "ck"):
-                warning_lines.append(f"regel {lineno}: onbekende locatie '{loc}' → '{raw}'")
-                continue
-
-            # naam check
-            if not name:
-                warning_lines.append(f"regel {lineno}: ontbrekende naam → '{raw}'")
-                continue
-
-            key = (date_str, time_str, loc)
-            overrides.setdefault(key, []).append(name)
-
-        if debug:
-            debug_lines.append(f"Overrides geladen: {len(overrides)} geldige sleutels")
-
-    except Exception as e:
-        error_message = f"Fout bij laden overrides: {e}"
-
-    return overrides, warning_lines, error_message, debug_lines
-    
-def apply_afgeschermd_overrides(matrix: pd.DataFrame,
-                                 overrides: dict,
-                                 location: str,
-                                 week_label_style: str,
-                                 debug: bool = False) -> List[str]:
-
-    debug_lines = []
-    applied_count = 0
-    added_count = 0
-
-    for (dag, van, tot, regel) in matrix.index:
-
-        # Alleen Namen-regels met echte tijdsloten
-        if regel != "Namen" or not van:
-            continue
-
-        for col in matrix.columns:
-
-            cell = matrix.loc[(dag, van, tot, regel), col]
-
-            # Week/jaar bepalen
-            try:
-                if week_label_style == "iso":
-                    y, w = map(int, col.split("-W"))
-                else:
-                    w = int(col.split()[1])
-                    y = now_naive_in_tz(TZ).isocalendar().year
-            except Exception:
-                continue
-
-            # Datum reconstrueren
-            try:
-                monday = pd.Timestamp.fromisocalendar(y, w, 1)
-                date = (monday + pd.Timedelta(days=DAYS_NL.index(dag))).strftime("%Y-%m-%d")
-            except Exception:
-                continue
-
-            key = (date, van, location)
-
-            # Geen override → skip
-            if key not in overrides:
-                continue
-
-            names_override = overrides[key]
-
-            # Huidige celinhoud
-            names_existing = cell.split("\n") if cell else []
-
-            # Zoek Afgeschermd
-            afgeschermd_idx = [
-                i for i, n in enumerate(names_existing)
-                if n.strip().lower() == "afgeschermd"
-            ]
-
-            n = len(afgeschermd_idx)
-            m = len(names_override)
-            changed = False
-            to_add = []
-
-            # ===== CASE 1: vervangen =====
-            if n > 0:
-                replace_count = min(n, m)
-
-                for i in range(replace_count):
-                    idx = afgeschermd_idx[i]
-                    names_existing[idx] = names_override[i]
-
-                applied_count += replace_count
-                changed = replace_count > 0
-
-                if debug and replace_count > 0:
-                    debug_lines.append(
-                        f"[override] {location} {date} {van}: {replace_count}/{n} vervangen"
-                    )
-
-            # ===== CASE 2: toevoegen =====
-            elif m > 0:
-                existing_set = {n.strip().lower() for n in names_existing if n.strip()}
-                to_add = [n for n in names_override if n.strip().lower() not in existing_set]
-
-                if to_add:
-                    names_existing.extend(to_add)
-                    added_count += len(to_add)
-                    changed = True
-
-                    if debug:
-                        debug_lines.append(
-                            f"[override] {location} {date} {van}: {len(to_add)} toegevoegd"
-                        )
-
-            # Terugschrijven
-            if changed:
-                matrix.loc[(dag, van, tot, regel), col] = "\n".join(names_existing)
-
-    if debug:
-        debug_lines.append(
-            f"Overrides toegepast ({location}): {applied_count} vervangen, {added_count} toegevoegd"
-        )
-
-    return debug_lines
-    
-    
-def month_short_nl(m:int) -> str:
-    return ["jan","feb","mrt","apr","mei","jun","jul","aug","sept","okt","nov","dec"][m-1]
+# ====================================
+# URL builders / fetch helpers
+# ====================================
 
 def build_urls(taskcodes: List[str], days: int, client_id: str,
                weekoffset: int = -1, fields: Optional[str] = FIELDS) -> List[str]:
@@ -480,6 +190,7 @@ def build_urls(taskcodes: List[str], days: int, client_id: str,
         urls.append(url)
     return urls
 
+
 def build_program_url(days: int, client_id: str, fields: str = PROGRAM_FIELDS,
                       eigenwedstrijden: str = "JA", thuis: str = "JA", uit: str = "NEE",
                       gebruiklokaleteamgegevens: str = "NEE") -> str:
@@ -491,10 +202,19 @@ def build_program_url(days: int, client_id: str, fields: str = PROGRAM_FIELDS,
         url += f"&fields={quote(fields)}"
     return url
 
+
+def build_activities_url(days: int, client_id: str, fields: str = ACTIVITIES_FIELDS) -> str:
+    base = "https://data.sportlink.com/verenigingsactiviteiten"
+    url = f"{base}?aantaldagen={int(days)}&client_id={client_id}"
+    if fields:
+        url += f"&fields={quote(fields)}"
+    return url
+
+
 def http_get_json(url: str, debug: bool = False, stats: Optional[dict] = None):
     headers = {
         "User-Agent": "CKC-Rooster/Streamlit",
-        "Accept": "application/json"
+        "Accept": "application/json",
     }
 
     debug_lines = []
@@ -502,7 +222,6 @@ def http_get_json(url: str, debug: bool = False, stats: Optional[dict] = None):
     if stats is None:
         stats = new_sportlink_stats()
 
-    # taakcode of endpoint uit URL halen
     task_code = None
     endpoint = "unknown"
 
@@ -530,20 +249,11 @@ def http_get_json(url: str, debug: bool = False, stats: Optional[dict] = None):
         try:
             if debug:
                 if endpoint == "vrijwilligers":
-                    debug_lines.append(
-                        f"Fetching vrijwilligers code {task_code} (poging {attempt})"
-                    )
+                    debug_lines.append(f"Fetching vrijwilligers code {task_code} (poging {attempt})")
                 else:
-                    debug_lines.append(
-                        f"Fetching {endpoint} (poging {attempt})"
-                    )
+                    debug_lines.append(f"Fetching {endpoint} (poging {attempt})")
 
-            r = session.get(
-                url,
-                timeout=(10, 30),
-                headers=headers
-            )
-
+            r = session.get(url, timeout=(10, 30), headers=headers)
             r.raise_for_status()
 
             if not r.content:
@@ -580,17 +290,13 @@ def http_get_json(url: str, debug: bool = False, stats: Optional[dict] = None):
             requests.exceptions.ChunkedEncodingError,
             requests.exceptions.ContentDecodingError,
             requests.exceptions.HTTPError,
-            ValueError
+            ValueError,
         ):
             if debug:
                 if endpoint == "vrijwilligers":
-                    debug_lines.append(
-                        f"⚠️ Netwerkfout code {task_code} ({attempt}/{max_retries})"
-                    )
+                    debug_lines.append(f"⚠️ Netwerkfout code {task_code} ({attempt}/{max_retries})")
                 else:
-                    debug_lines.append(
-                        f"⚠️ Netwerkfout {endpoint} ({attempt}/{max_retries})"
-                    )
+                    debug_lines.append(f"⚠️ Netwerkfout {endpoint} ({attempt}/{max_retries})")
 
             if attempt < max_retries:
                 stats["retries"] += 1
@@ -600,19 +306,12 @@ def http_get_json(url: str, debug: bool = False, stats: Optional[dict] = None):
 
                 if debug:
                     if endpoint == "vrijwilligers":
-                        debug_lines.append(
-                            f"❌ Ophalen mislukt voor vrijwilligers code {task_code}"
-                        )
+                        debug_lines.append(f"❌ Ophalen mislukt voor vrijwilligers code {task_code}")
                     else:
-                        debug_lines.append(
-                            f"❌ Ophalen mislukt voor {endpoint}"
-                        )
+                        debug_lines.append(f"❌ Ophalen mislukt voor {endpoint}")
 
                 return [], debug_lines
 
-
-from concurrent.futures import ThreadPoolExecutor
-from itertools import chain
 
 @st.cache_data(ttl=300)
 def fetch_all(urls: List[str], debug: bool = False, stats: Optional[dict] = None):
@@ -656,14 +355,75 @@ def fetch_all(urls: List[str], debug: bool = False, stats: Optional[dict] = None
         results.append(r if isinstance(r, list) else [])
 
     return list(chain.from_iterable(results)), all_debug_lines
-    
-def _pick(colnames, candidates):
-    for c in candidates:
-        if c in colnames: return c
-    lower = {c.lower(): c for c in colnames}
-    for c in candidates:
-        if c.lower() in lower: return lower[c.lower()]
-    return None
+
+
+def read_manual_text_from_dropbox(timeout: int = 30) -> str:
+    direct = _ensure_dropbox_direct(DROPBOX_INPUT_URL)
+    r = requests.get(direct, timeout=timeout)
+    r.raise_for_status()
+    return r.text
+
+
+def load_afgeschermd_overrides_from_dropbox(debug=False):
+    overrides = {}
+    warning_lines = []
+    debug_lines = []
+    error_message = None
+
+    try:
+        url = _ensure_dropbox_direct(DROPBOX_OVERRIDE_URL)
+        txt = session.get(url, timeout=30).text
+
+        for lineno, line in enumerate(txt.splitlines(), start=1):
+            raw = line.strip()
+
+            if not raw or raw.startswith("#"):
+                continue
+
+            parts = raw.split()
+
+            if len(parts) < 4:
+                warning_lines.append(f"regel {lineno}: te weinig velden → '{raw}'")
+                continue
+
+            date_str, time_str, loc = parts[0], parts[1], parts[2].lower()
+            name = " ".join(parts[3:]).strip()
+
+            try:
+                datetime.strptime(date_str, "%Y-%m-%d")
+            except Exception:
+                warning_lines.append(f"regel {lineno}: ongeldige datum → '{raw}'")
+                continue
+
+            try:
+                datetime.strptime(time_str, "%H:%M")
+            except Exception:
+                warning_lines.append(f"regel {lineno}: ongeldige tijd → '{raw}'")
+                continue
+
+            if loc not in ("bar", "ck"):
+                warning_lines.append(f"regel {lineno}: onbekende locatie '{loc}' → '{raw}'")
+                continue
+
+            if not name:
+                warning_lines.append(f"regel {lineno}: ontbrekende naam → '{raw}'")
+                continue
+
+            key = (date_str, time_str, loc)
+            overrides.setdefault(key, []).append(name)
+
+        if debug:
+            debug_lines.append(f"Overrides geladen: {len(overrides)} geldige sleutels")
+
+    except Exception as e:
+        error_message = f"Fout bij laden overrides: {e}"
+
+    return overrides, warning_lines, error_message, debug_lines
+
+
+# ====================================
+# Normalizers / parsers
+# ====================================
 
 def normalize_dataframe(data, tz_str: str):
     df_raw = pd.DataFrame(data)
@@ -671,24 +431,26 @@ def normalize_dataframe(data, tz_str: str):
     if df_raw.empty:
         return pd.DataFrame(columns=[
             "Naam", "Datum vanaf", "Datum tot", "Tijd vanaf", "Tijd tot",
-            "Datum", "Week", "ISO_Year", "Weekdag_num", "Dag"
+            "Datum", "Week", "ISO_Year", "Weekdag_num", "Dag",
         ])
 
     cols = df_raw.columns.tolist()
 
-    c_naam = _pick(cols, ["Naam","naam","Vrijwilliger","vrijwilliger","vrijwilligerNaam","displayName"])
-    c_dv   = _pick(cols, ["Datum vanaf","datumvanaf","start","Start","DatumVanaf","startDatumTijd","startDateTime"])
-    c_dt   = _pick(cols, ["Datum tot","datumtot","eind","Eind","DatumTot","eindDatumTijd","endDateTime"])
-    c_tv   = _pick(cols, ["Tijd vanaf","tijdvanaf","startTijd","starttijd","StartTijd"])
-    c_tt   = _pick(cols, ["Tijd tot","tijdtot","eindtijd","EindTijd","endTijd","TijdTot"])
+    c_naam = _pick(cols, ["Naam", "naam", "Vrijwilliger", "vrijwilliger", "vrijwilligerNaam", "displayName"])
+    c_dv = _pick(cols, ["Datum vanaf", "datumvanaf", "start", "Start", "DatumVanaf", "startDatumTijd", "startDateTime"])
+    c_dt = _pick(cols, ["Datum tot", "datumtot", "eind", "Eind", "DatumTot", "eindDatumTijd", "endDateTime"])
+    c_tv = _pick(cols, ["Tijd vanaf", "tijdvanaf", "startTijd", "starttijd", "StartTijd"])
+    c_tt = _pick(cols, ["Tijd tot", "tijdtot", "eindtijd", "EindTijd", "endTijd", "TijdTot"])
 
     df = df_raw.copy()
     if c_tv is None and c_dv is not None:
         tmp = pd.to_datetime(df[c_dv], errors="coerce", utc=True)
-        df["Tijd vanaf"] = tmp.dt.tz_convert(tz_str).dt.strftime("%H:%M"); c_tv = "Tijd vanaf"
+        df["Tijd vanaf"] = tmp.dt.tz_convert(tz_str).dt.strftime("%H:%M")
+        c_tv = "Tijd vanaf"
     if c_tt is None and c_dt is not None:
         tmp2 = pd.to_datetime(df[c_dt], errors="coerce", utc=True)
-        df["Tijd tot"] = tmp2.dt.tz_convert(tz_str).dt.strftime("%H:%M"); c_tt = "Tijd tot"
+        df["Tijd tot"] = tmp2.dt.tz_convert(tz_str).dt.strftime("%H:%M")
+        c_tt = "Tijd tot"
 
     empty = pd.Series("", index=df.index)
 
@@ -716,6 +478,7 @@ def normalize_dataframe(data, tz_str: str):
     out["Tijd tot"] = t_to.dt.strftime("%H:%M").fillna("")
     return out
 
+
 def filter_from_current_week(df: pd.DataFrame, tz_str: str) -> pd.DataFrame:
     if "Datum" not in df.columns:
         return df.iloc[0:0].copy()
@@ -729,97 +492,241 @@ def filter_from_current_week(df: pd.DataFrame, tz_str: str) -> pd.DataFrame:
     monday_naive = (now_naive - pd.Timedelta(days=int(now_naive.weekday()))).normalize()
     return df[df["Datum"].dt.normalize() >= monday_naive].copy()
 
-def monday_of_week(d: pd.Timestamp) -> pd.Timestamp:
-    return d - pd.Timedelta(days=int(d.weekday()))
 
-def derive_weeks(df: pd.DataFrame, tz_str: str, horizon_weeks_if_empty=4):
-    if not df.empty:
-        weeks_pairs = sorted({(int(y), int(w)) for y, w in zip(df["ISO_Year"], df["Week"])})
-        week_mondays = {}
-        for (y, w) in weeks_pairs:
-            d0 = df.loc[(df["ISO_Year"] == y) & (df["Week"] == w), "Datum"].iloc[0]
-            week_mondays[(y, w)] = monday_of_week(d0)
-        return weeks_pairs, week_mondays
-    now = now_naive_in_tz(tz_str)
-    mon0 = now - pd.Timedelta(days=int(now.weekday()))
-    weeks_pairs = []; week_mondays = {}
-    for i in range(horizon_weeks_if_empty):
-        mon = (mon0 + pd.Timedelta(days=7*i)).normalize()
-        iso = mon.isocalendar(); pair = (int(iso.year), int(iso.week))
-        weeks_pairs.append(pair); week_mondays[pair] = mon
-    return weeks_pairs, week_mondays
+def _strip_ckc_prefix(name: str) -> str:
+    if not isinstance(name, str):
+        return ""
+    s = name.strip()
+    up = s.upper()
+    if up.startswith("CKC JO") or up.startswith("CKC MO") or up.startswith("CKC O") or up.startswith("CKC VR"):
+        return s[4:].lstrip()
+    return s
 
-# ===== matrix met subregels (intern) =====
-REGELS = ["Handmatig", "Wedstrijden", "Namen"]
 
-def build_empty_matrix(slots: Dict[str, List[Tuple[str,str]]],
-                       tz_str: str,
-                       days_subset=None,
-                       horizon_weeks_if_empty=4,
-                       week_label_style: str="short",
-                       weeks_pairs=None, week_mondays=None) -> pd.DataFrame:
-    if weeks_pairs is None or week_mondays is None:
-        raise ValueError("weeks_pairs en week_mondays zijn verplicht")
+def normalize_program(data, tz_str: str) -> pd.DataFrame:
+    df = pd.DataFrame(data)
+    empty = pd.DataFrame(columns=["Datum", "Dag", "Tijd", "ISO_Year", "Week", "HomeTeam"])
+    if df.empty:
+        return empty
 
-    def week_label(pair: Tuple[int,int]) -> str:
-        y, w = pair
-        return f"{y}-W{w:02d}" if week_label_style == "iso" else f"Week {w}"
+    c_date = _pick(df.columns, ["wedstrijddatum"])
+    c_home = _pick(df.columns, ["thuisteam"])
+    c_home_code = _pick(df.columns, ["thuisteamclubrelatiecode"])
+    c_away = _pick(df.columns, ["uitteam"])
+    c_away_code = _pick(df.columns, ["uitteamclubrelatiecode"])
+    c_accommodatie = _pick(df.columns, ["accommodatie"])
 
-    days_to_use = DAYS_NL if days_subset is None else [d for d in DAYS_NL if d in days_subset]
-    rows = []
-    for d in days_to_use:
-        rows.append((d, "", "", ""))  # dag-header
-        for (van, tot) in slots.get(d, []):
-            for r in REGELS:
-                rows.append((d, van, tot, r))
+    for col in (c_date, c_home, c_home_code, c_away, c_away_code, c_accommodatie):
+        if col is None or col not in df.columns:
+            return empty
 
-    matrix = pd.DataFrame(
-        "",
-        index=pd.MultiIndex.from_tuples(rows, names=["Dag","Tijd-van","Tijd-tot","Regel"]),
-        columns=[week_label(p) for p in weeks_pairs]
+    dt = pd.to_datetime(df[c_date].astype(str).str.strip(), errors="coerce", utc=True)
+    mask_ok = dt.notna()
+    if not mask_ok.any():
+        return empty
+
+    dt_local_naive = dt.dt.tz_convert(ZoneInfo(tz_str)).dt.tz_localize(None)
+    df = df.loc[mask_ok].copy()
+    df["Datum"] = dt_local_naive.astype("datetime64[ns]")
+
+    df = df[df[c_accommodatie].astype(str).str.strip().eq(CKC_ACCOMMODATIE)].copy()
+    if df.empty:
+        return empty
+
+    df["Dag"] = df["Datum"].dt.weekday.map(lambda i: DAYS_NL[i])
+    df["Tijd"] = df["Datum"].dt.strftime("%H:%M")
+    iso = df["Datum"].dt.isocalendar()
+    df["ISO_Year"] = iso.year.astype(int)
+    df["Week"] = iso.week.astype(int)
+
+    def pick_ckc_team(r):
+        home_is_ckc = str(r[c_home_code]).strip() == CKC_CLUBRELATIECODE
+        away_is_ckc = str(r[c_away_code]).strip() == CKC_CLUBRELATIECODE
+
+        if home_is_ckc:
+            return _strip_ckc_prefix(str(r[c_home]))
+
+        if away_is_ckc:
+            return _strip_ckc_prefix(str(r[c_away]))
+
+        return ""
+
+    df["HomeTeam"] = df.apply(pick_ckc_team, axis=1)
+    df = df[df["HomeTeam"].astype(str).str.strip() != ""].copy()
+
+    return df[["Datum", "Dag", "Tijd", "ISO_Year", "Week", "HomeTeam"]]
+
+
+def normalize_activities(data, tz_str: str) -> pd.DataFrame:
+    df = pd.DataFrame(data)
+
+    empty = pd.DataFrame(columns=["Datum", "Dag", "Tijd", "ISO_Year", "Week", "Activiteit", "Date", "IsAllDay"])
+    if df.empty:
+        return empty
+
+    c_dt = _pick(df.columns, ["datumvan"])
+    c_name = _pick(df.columns, ["activiteit"])
+    c_heledag = _pick(df.columns, ["heledag"])
+
+    if not c_dt or not c_name:
+        return empty
+
+    dt = pd.to_datetime(df[c_dt], errors="coerce", utc=True)
+    dt = dt.dt.tz_convert(ZoneInfo(tz_str)).dt.tz_localize(None)
+
+    df["Datum"] = dt
+    df = df.dropna(subset=["Datum"])
+
+    df["Dag"] = df["Datum"].dt.weekday.map(lambda i: DAYS_NL[i])
+    df["Tijd"] = df["Datum"].dt.strftime("%H:%M")
+
+    iso = df["Datum"].dt.isocalendar()
+    df["ISO_Year"] = iso.year.astype(int)
+    df["Week"] = iso.week.astype(int)
+
+    df["Activiteit"] = df[c_name].astype(str).str.strip()
+
+    df["IsAllDay"] = False
+    if c_heledag:
+        mask = df[c_heledag].astype(str).str.lower() == "true"
+        df.loc[mask, "Tijd"] = "00:00"
+        df.loc[mask, "IsAllDay"] = True
+
+    df["Date"] = df["Datum"].dt.date
+
+    return df[["Datum", "Dag", "Tijd", "ISO_Year", "Week", "Activiteit", "Date", "IsAllDay"]]
+
+
+def parse_manual_text(text: str):
+    entries = []
+    if not text:
+        return entries
+
+    now_aw = now_aware_in_tz(TZ)
+    monday_aw = (now_aw - pd.Timedelta(days=int(now_aw.weekday()))).replace(
+        hour=0, minute=0, second=0, microsecond=0
     )
 
-    # Kolom-headers met datum
-    for p in weeks_pairs:
-        mon = week_mondays[p]; col = week_label(p)
-        for d in days_to_use:
-            day_date = (mon + pd.Timedelta(days=DAYS_NL.index(d))).strftime("%d-%b")
-            matrix.loc[(d,"","", ""), col] = f"{d} ({day_date})"
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        parts = s.split()
+        if len(parts) < 3:
+            continue
 
-    return matrix
+        date_str, time_str = parts[0], parts[1]
+        txt = " ".join(parts[2:]).strip()
 
-# ===== helpers voor tijd =====
-def _hhmm_to_minutes(hhmm: str) -> int:
-    try:
-        h, m = hhmm.split(":")
-        return int(h) * 60 + int(m)
-    except Exception:
-        return -1
-        
-# == v2.11.0: default en custom slots samenvoegen  
+        try:
+            dt_aw = pd.Timestamp(f"{date_str} {time_str}", tz=ZoneInfo(TZ))
+        except Exception:
+            continue
+
+        if dt_aw < monday_aw:
+            continue
+
+        day_name = DAYS_NL[int(dt_aw.weekday())]
+        starts = [a for a, b in DEFAULT_SLOTS.get(day_name, [])]
+        if time_str not in starts:
+            continue
+
+        iso = dt_aw.isocalendar()
+        entries.append({
+            "date": dt_aw.tz_convert(None),
+            "time_from": time_str,
+            "text": txt,
+            "iso_year": int(iso.year),
+            "iso_week": int(iso.week),
+            "day": day_name,
+        })
+
+    return entries
+
+
+# ====================================
+# Week- en indexhelpers
+# ====================================
+
+def compute_weeks(df_list, annotations, tz_str: str):
+    pairs = set()
+
+    for df in df_list:
+        if df is None or df.empty:
+            continue
+        for y, w in zip(df["ISO_Year"], df["Week"]):
+            pairs.add((int(y), int(w)))
+
+    now = now_naive_in_tz(tz_str)
+    iso = now.isocalendar()
+    pairs.add((int(iso.year), int(iso.week)))
+
+    pairs |= {(a["iso_year"], a["iso_week"]) for a in annotations}
+
+    pairs = sorted(pairs)
+    week_mondays = {p: pd.Timestamp.fromisocalendar(p[0], p[1], 1) for p in pairs}
+
+    return pairs, week_mondays
+
+
+def build_match_index_for_overlap(df_program: pd.DataFrame) -> Dict[tuple, List[Tuple[int, str]]]:
+    idx: Dict[tuple, List[Tuple[int, str]]] = {}
+    for _, r in df_program.iterrows():
+        y, w, d = int(r["ISO_Year"]), int(r["Week"]), r["Dag"]
+        try:
+            h, m = str(r["Tijd"]).split(":")
+            tmin = int(h) * 60 + int(m)
+        except Exception:
+            continue
+        team = str(r["HomeTeam"]).strip()
+        if team:
+            idx.setdefault((y, w, d), []).append((tmin, team))
+    return idx
+
+
+def build_activities_overlap_index(df: pd.DataFrame) -> Dict[tuple, List[Tuple[int, str]]]:
+    idx: Dict[tuple, List[Tuple[int, str]]] = {}
+
+    for _, r in df.iterrows():
+        y, w, d = int(r["ISO_Year"]), int(r["Week"]), r["Dag"]
+
+        try:
+            h, m = r["Tijd"].split(":")
+            tmin = int(h) * 60 + int(m)
+        except Exception:
+            continue
+
+        txt = r["Activiteit"]
+
+        if txt:
+            idx.setdefault((y, w, d), []).append((tmin, txt))
+
+    return idx
+
+
+# ====================================
+# Slotlogica
+# ====================================
+
 def merge_custom_slots_into_defaults(
     df_list,
     base_slots: Dict[str, List[Tuple[str, str]]],
-    activities_df: Optional[pd.DataFrame] = None
-) -> Tuple[Dict[str, List[Tuple[str, str]]], List[str]]:    
+    activities_df: Optional[pd.DataFrame] = None,
+) -> Tuple[Dict[str, List[Tuple[str, str]]], List[str]]:
     """
     Haalt custom diensten uit data en voegt ze toe aan DEFAULT_SLOTS.
-    Inclusief:
-    - chronologisch sorteren
-    - overlap corrigeren (aansluiten)
-    - deduplicatie
+    Inclusief chronologisch sorteren, overlapcorrectie en deduplicatie.
     Retourneert: (nieuwe_slots, warnings)
     """
     warnings = []
     slots = {d: list(v) for d, v in base_slots.items()}
-    
+
     base_set = {
         (d, sv, st)
         for d, lst in base_slots.items()
         for (sv, st) in lst
     }
 
-    # verzamel alle diensten
     for df in df_list:
         if df is None or df.empty:
             continue
@@ -827,7 +734,7 @@ def merge_custom_slots_into_defaults(
         for _, r in df.iterrows():
             d = r.get("Dag")
             t_from = str(r.get("Tijd vanaf") or "").strip()
-            t_to   = str(r.get("Tijd tot") or "").strip()
+            t_to = str(r.get("Tijd tot") or "").strip()
 
             if not d or not t_from or not t_to:
                 continue
@@ -835,25 +742,22 @@ def merge_custom_slots_into_defaults(
             if d not in slots:
                 slots[d] = []
 
-            # 🔹 NIEUW: skip als exact bestaand slot
             if (d, t_from, t_to) in base_set:
                 continue
-            
+
             new_from = _hhmm_to_minutes(t_from)
-            new_to   = _hhmm_to_minutes(t_to)
+            new_to = _hhmm_to_minutes(t_to)
 
             if new_from < 0 or new_to <= new_from:
                 continue
 
             adjusted_from = new_from
-            adjusted_to   = new_to
+            adjusted_to = new_to
 
-            # overlap met bestaande slots corrigeren
             for (sv, st) in slots[d]:
                 sv_m = _hhmm_to_minutes(sv)
                 st_m = _hhmm_to_minutes(st)
 
-                # overlap → inkorten
                 if max(adjusted_from, sv_m) < min(adjusted_to, st_m):
                     if adjusted_from < sv_m:
                         adjusted_to = min(adjusted_to, sv_m)
@@ -865,19 +769,18 @@ def merge_custom_slots_into_defaults(
                 continue
 
             new_slot = (
-                f"{adjusted_from//60:02d}:{adjusted_from%60:02d}",
-                f"{adjusted_to//60:02d}:{adjusted_to%60:02d}"
+                f"{adjusted_from // 60:02d}:{adjusted_from % 60:02d}",
+                f"{adjusted_to // 60:02d}:{adjusted_to % 60:02d}",
             )
 
             if new_slot not in slots[d]:
                 slots[d].append(new_slot)
-            
+
                 if (adjusted_from != new_from) or (adjusted_to != new_to):
                     warnings.append(f"{d} {t_from}-{t_to} aangepast naar {new_slot[0]}-{new_slot[1]}")
                 else:
                     warnings.append(f"{d} {t_from}-{t_to} toegevoegd als nieuw tijdslot")
-                    
-    # 🔥 Activiteiten als extra tijdsloten
+
     if activities_df is not None and not activities_df.empty:
         for _, r in activities_df.iterrows():
             d = r.get("Dag")
@@ -892,30 +795,27 @@ def merge_custom_slots_into_defaults(
             start = _hhmm_to_minutes(t)
             end = start + 30
 
-            # 🔴 check overlap met bestaande slots
             overlap = False
             for (sv, st) in slots[d]:
                 sv_m = _hhmm_to_minutes(sv)
                 st_m = _hhmm_to_minutes(st)
-            
+
                 if max(start, sv_m) < min(end, st_m):
                     overlap = True
                     break
-            
+
             if overlap:
-                continue  # skip activiteit slot
-            
+                continue
+
             new_slot = (
-                f"{start//60:02d}:{start%60:02d}",
-                f"{end//60:02d}:{end%60:02d}"
+                f"{start // 60:02d}:{start % 60:02d}",
+                f"{end // 60:02d}:{end % 60:02d}",
             )
 
             if new_slot not in slots[d]:
                 slots[d].append(new_slot)
                 warnings.append(f"📅 Activiteit slot toegevoegd: {d} {new_slot[0]}-{new_slot[1]}")
-    
-    
-    # sorteren + aansluiten
+
     for d in slots:
         day_slots = sorted(slots[d], key=lambda x: _hhmm_to_minutes(x[0]))
 
@@ -929,39 +829,144 @@ def merge_custom_slots_into_defaults(
             prev_end = _hhmm_to_minutes(prev_st)
             cur_start = _hhmm_to_minutes(sv)
 
-            # aansluiten
             if cur_start < prev_end:
-                sv = prev_st  # schuif start op
-            
-            # 🔴 NIEUW: check of slot nog geldig is
+                sv = prev_st
+
             if _hhmm_to_minutes(st) <= _hhmm_to_minutes(sv):
-                continue  # skip invalid slot
-            
+                continue
+
             merged.append((sv, st))
-            
+
         slots[d] = merged
         warnings = list(dict.fromkeys(warnings))
 
     return slots, warnings
 
 
-# ===== v2.8: namen in ALLE overlappende slots plaatsen + WARNINGS (met datum) =====
+# ====================================
+# Matrix builders
+# ====================================
+
+def build_empty_matrix(slots: Dict[str, List[Tuple[str, str]]],
+                       tz_str: str,
+                       days_subset=None,
+                       horizon_weeks_if_empty=4,
+                       week_label_style: str = "short",
+                       weeks_pairs=None,
+                       week_mondays=None) -> pd.DataFrame:
+    if weeks_pairs is None or week_mondays is None:
+        raise ValueError("weeks_pairs en week_mondays zijn verplicht")
+
+    def week_label(pair: Tuple[int, int]) -> str:
+        y, w = pair
+        return f"{y}-W{w:02d}" if week_label_style == "iso" else f"Week {w}"
+
+    days_to_use = DAYS_NL if days_subset is None else [d for d in DAYS_NL if d in days_subset]
+    rows = []
+    for d in days_to_use:
+        rows.append((d, "", "", ""))
+        for (van, tot) in slots.get(d, []):
+            for r in REGELS:
+                rows.append((d, van, tot, r))
+
+    matrix = pd.DataFrame(
+        "",
+        index=pd.MultiIndex.from_tuples(rows, names=["Dag", "Tijd-van", "Tijd-tot", "Regel"]),
+        columns=[week_label(p) for p in weeks_pairs],
+    )
+
+    for p in weeks_pairs:
+        mon = week_mondays[p]
+        col = week_label(p)
+        for d in days_to_use:
+            day_date = (mon + pd.Timedelta(days=DAYS_NL.index(d))).strftime("%d-%b")
+            matrix.loc[(d, "", "", ""), col] = f"{d} ({day_date})"
+
+    return matrix
+
+
+def build_roster_matrix(
+    slots: Dict[str, List[Tuple[str, str]]],
+    days_subset,
+    weeks_pairs,
+    week_mondays,
+    tz_str: str,
+    week_label_style: str,
+) -> pd.DataFrame:
+    return build_empty_matrix(
+        slots=slots,
+        tz_str=tz_str,
+        days_subset=days_subset,
+        horizon_weeks_if_empty=4,
+        week_label_style=week_label_style,
+        weeks_pairs=weeks_pairs,
+        week_mondays=week_mondays,
+    )
+
+
+def build_activities_calendar_matrix(df_activities):
+    if df_activities.empty:
+        return pd.DataFrame()
+
+    df = df_activities.copy()
+
+    if "Date" not in df.columns:
+        raise ValueError(f"'Date' kolom ontbreekt: {df.columns}")
+
+    df["date"] = pd.to_datetime(df["Date"]).dt.date
+
+    if "Tijd" in df.columns:
+        df["text"] = df["Tijd"].astype(str) + " " + df["Activiteit"].astype(str)
+    else:
+        df["text"] = df["Activiteit"].astype(str)
+
+    if "Tijd" in df.columns:
+        df = df.sort_values(["date", "Tijd"])
+    else:
+        df = df.sort_values("date")
+
+    grouped = df.groupby("date")["text"].apply(list)
+
+    first_date = min(grouped.index)
+    last_date = max(grouped.index)
+
+    start = first_date - pd.Timedelta(days=first_date.weekday())
+    end = last_date + pd.Timedelta(days=(6 - last_date.weekday()))
+
+    all_dates = pd.date_range(start=start, end=end, freq="D")
+
+    matrix = pd.DataFrame(index=[0], columns=all_dates)
+
+    for d in all_dates:
+        if d.date() in grouped:
+            matrix[d] = "\n".join(grouped[d.date()])
+        else:
+            matrix[d] = ""
+
+    matrix.insert(0, "Week", "")
+
+    return matrix
+
+
+# ====================================
+# Matrix fillers
+# ====================================
+
 def fill_names(matrix: pd.DataFrame, df: pd.DataFrame,
-               slots: Dict[str, List[Tuple[str,str]]],
+               slots: Dict[str, List[Tuple[str, str]]],
                week_label_style: str) -> List[str]:
     """
-    Plaats namen in ALLE slots waarmee de dienst overlapt.
-    Retourneert waarschuwingen (incl. datum) voor diensten die niet geplaatst konden worden.
+    Plaats namen in alle slots waarmee de dienst overlapt.
+    Retourneert waarschuwingen voor diensten die niet geplaatst konden worden.
     """
     warnings_list: List[str] = []
 
     for _, r in df.iterrows():
         d = r.get("Dag")
         t_from = str(r.get("Tijd vanaf") or "").strip()
-        t_to   = str(r.get("Tijd tot")   or "").strip()
-        naam   = str(r.get("Naam") or "").strip()
+        t_to = str(r.get("Tijd tot") or "").strip()
+        naam = str(r.get("Naam") or "").strip()
 
-        # Datum-string (YYYY-MM-DD) voor meldingen
         date_obj = r.get("Datum")
         date_str = ""
         try:
@@ -974,10 +979,12 @@ def fill_names(matrix: pd.DataFrame, df: pd.DataFrame,
             continue
 
         try:
-            w = int(r["Week"]); y = int(r["ISO_Year"])
+            w = int(r["Week"])
+            y = int(r["ISO_Year"])
         except Exception:
             continue
-        col = (f"{y}-W{w:02d}" if week_label_style == "iso" else f"Week {w}")
+
+        col = f"{y}-W{w:02d}" if week_label_style == "iso" else f"Week {w}"
         if col not in matrix.columns:
             continue
 
@@ -986,14 +993,14 @@ def fill_names(matrix: pd.DataFrame, df: pd.DataFrame,
 
         overlapped = []
         for (sv, st) in slots.get(d, []):
-            sv_m = _hhmm_to_minutes(sv); st_m = _hhmm_to_minutes(st)
+            sv_m = _hhmm_to_minutes(sv)
+            st_m = _hhmm_to_minutes(st)
             if rf < 0 or sv_m < 0 or st_m <= sv_m:
                 continue
-            if rt > rf:  # eindtijd aanwezig → overlap
+            if rt > rf:
                 if max(rf, sv_m) < min(rt, st_m):
                     overlapped.append((sv, st))
             else:
-                # geen eindtijd → containment op start
                 if sv_m <= rf < st_m:
                     overlapped.append((sv, st))
 
@@ -1017,10 +1024,11 @@ def fill_names(matrix: pd.DataFrame, df: pd.DataFrame,
 
     return warnings_list
 
-# === fill_manual (met bestaan-check) ===
-def fill_manual(matrix: pd.DataFrame, annotations, slots: Dict[str, List[Tuple[str,str]]],
+
+def fill_manual(matrix: pd.DataFrame, annotations, slots: Dict[str, List[Tuple[str, str]]],
                 week_label_style: str):
-    def week_label(y, w): return f"{y}-W{w:02d}" if week_label_style=="iso" else f"Week {w}"
+    def week_label(y, w):
+        return f"{y}-W{w:02d}" if week_label_style == "iso" else f"Week {w}"
 
     for a in annotations:
         label = week_label(a["iso_year"], a["iso_week"])
@@ -1030,45 +1038,32 @@ def fill_manual(matrix: pd.DataFrame, annotations, slots: Dict[str, List[Tuple[s
         tot = None
         for (v, t) in slots.get(a["day"], []):
             if v == a["time_from"]:
-                tot = t; break
+                tot = t
+                break
         if tot is None:
             continue
 
         key = (a["day"], a["time_from"], tot, "Handmatig")
         if key not in matrix.index:
-            continue  # voorkomt KeyError bij dagen die niet bestaan (bv. CK: alleen Zaterdag)
+            continue
 
         cur = matrix.loc[key, label]
         txt = a["text"].strip()
         if txt:
             matrix.loc[key, label] = (cur + "\n" + txt) if cur else txt
 
-def build_match_index_for_overlap(df_program: pd.DataFrame) -> Dict[tuple, List[Tuple[int, str]]]:
-    idx: Dict[tuple, List[Tuple[int, str]]] = {}
-    for _, r in df_program.iterrows():
-        y, w, d = int(r["ISO_Year"]), int(r["Week"]), r["Dag"]
-        try:
-            h, m = str(r["Tijd"]).split(":"); tmin = int(h)*60+int(m)
-        except Exception:
-            continue
-        team = str(r["HomeTeam"]).strip()
-        if team:
-            idx.setdefault((y, w, d), []).append((tmin, team))
-    return idx
 
 def fill_schedule_items(
     matrix: pd.DataFrame,
     match_index,
     week_label_style: str,
-    slots: Dict[str, List[Tuple[str,str]]],
-    activities_overlap_index: Optional[Dict[tuple, List[Tuple[int, str]]]] = None
+    slots: Dict[str, List[Tuple[str, str]]],
+    activities_overlap_index: Optional[Dict[tuple, List[Tuple[int, str]]]] = None,
 ):
     """
     Vul de 'Wedstrijden'-regels van de matrix met:
     - thuiswedstrijden uit match_index
     - verenigingsactiviteiten uit activities_overlap_index
-
-    Beide worden gegroepeerd per aanvangstijd binnen het betreffende tijdslot.
     """
     cols = list(matrix.columns)
 
@@ -1080,13 +1075,12 @@ def fill_schedule_items(
             continue
 
         v_from = _hhmm_to_minutes(van)
-        v_to   = _hhmm_to_minutes(tot)
+        v_to = _hhmm_to_minutes(tot)
 
         if v_from < 0 or v_to <= v_from:
             continue
 
         for label in cols:
-
             if week_label_style == "iso":
                 parts = label.split("-W")
                 y, w = int(parts[0]), int(parts[1])
@@ -1131,240 +1125,302 @@ def fill_schedule_items(
                 matrix.loc[key, label] = text
 
 
+def apply_afgeschermd_overrides(matrix: pd.DataFrame,
+                                 overrides: dict,
+                                 location: str,
+                                 week_label_style: str,
+                                 debug: bool = False) -> List[str]:
+    debug_lines = []
+    applied_count = 0
+    added_count = 0
+
+    for (dag, van, tot, regel) in matrix.index:
+        if regel != "Namen" or not van:
+            continue
+
+        for col in matrix.columns:
+            cell = matrix.loc[(dag, van, tot, regel), col]
+
+            try:
+                if week_label_style == "iso":
+                    y, w = map(int, col.split("-W"))
+                else:
+                    w = int(col.split()[1])
+                    y = now_naive_in_tz(TZ).isocalendar().year
+            except Exception:
+                continue
+
+            try:
+                monday = pd.Timestamp.fromisocalendar(y, w, 1)
+                date = (monday + pd.Timedelta(days=DAYS_NL.index(dag))).strftime("%Y-%m-%d")
+            except Exception:
+                continue
+
+            key = (date, van, location)
+
+            if key not in overrides:
+                continue
+
+            names_override = overrides[key]
+            names_existing = cell.split("\n") if cell else []
+
+            afgeschermd_idx = [
+                i for i, n in enumerate(names_existing)
+                if n.strip().lower() == "afgeschermd"
+            ]
+
+            n = len(afgeschermd_idx)
+            m = len(names_override)
+            changed = False
+
+            if n > 0:
+                replace_count = min(n, m)
+
+                for i in range(replace_count):
+                    idx = afgeschermd_idx[i]
+                    names_existing[idx] = names_override[i]
+
+                applied_count += replace_count
+                changed = replace_count > 0
+
+                if debug and replace_count > 0:
+                    debug_lines.append(f"[override] {location} {date} {van}: {replace_count}/{n} vervangen")
+
+            elif m > 0:
+                existing_set = {n.strip().lower() for n in names_existing if n.strip()}
+                to_add = [n for n in names_override if n.strip().lower() not in existing_set]
+
+                if to_add:
+                    names_existing.extend(to_add)
+                    added_count += len(to_add)
+                    changed = True
+
+                    if debug:
+                        debug_lines.append(f"[override] {location} {date} {van}: {len(to_add)} toegevoegd")
+
+            if changed:
+                matrix.loc[(dag, van, tot, regel), col] = "\n".join(names_existing)
+
+    if debug:
+        debug_lines.append(f"Overrides toegepast ({location}): {applied_count} vervangen, {added_count} toegevoegd")
+
+    return debug_lines
+
+
 def prune_empty_subrows(matrix: pd.DataFrame) -> pd.DataFrame:
-    """Verwijder lege subregels, behalve:
-       - dag-headers
-       - 'Namen'-regels (altijd tonen, ook als leeg) om lege tijdvakken zichtbaar te houden.
-    """
+    """Verwijder lege subregels, behalve dag-headers en 'Namen'-regels."""
     keep_flags = []
     for idx in matrix.index:
         d, van, tot, regel = idx
-        # Dag-header altijd houden
         if not van and not tot and not regel:
             keep_flags.append(True)
             continue
-        # 'Namen' nooit verwijderen (ook leeg zichtbaar)
         if regel == "Namen":
             keep_flags.append(True)
             continue
-        # Overige subregels alleen houden als er inhoud is
         row = matrix.loc[idx]
         has_content = any(bool(str(v)) for v in row.values)
         keep_flags.append(has_content)
     return matrix[keep_flags]
 
-# ===== formatter (rijkere opmaak) =====
-def format_sheet(ws, matrix: pd.DataFrame, slots: Dict[str, List[Tuple[str,str]]], tz_str: str):
-    thin  = Side(style="thin",  color="FFAAAAAA")
+
+# ====================================
+# Excel formatting
+# ====================================
+
+def format_sheet(ws, matrix: pd.DataFrame, slots: Dict[str, List[Tuple[str, str]]], tz_str: str):
+    thin = Side(style="thin", color="FFAAAAAA")
     thick = Side(style="thick", color="FF000000")
     bold = Font(bold=True)
     wrap = Alignment(wrap_text=True, vertical="top")
     center = Alignment(horizontal="center", vertical="center")
 
-    first_week_col_idx = 4  # A:Dag, B:Tijd-van, C:Tijd-tot, D: 1e weekkolom
+    first_week_col_idx = 4
 
-    # Laatste rij per dag → dikke horizontale lijn
     day_last_row = {}
     for r_idx, (d, van, tot, regel) in enumerate(matrix.index, start=2):
-        if van and regel in ("Handmatig","Wedstrijden","Namen"):
+        if van and regel in ("Handmatig", "Wedstrijden", "Namen"):
             day_last_row[d] = r_idx
 
-    # Opmaak per cel
     for r_idx, (d, van, tot, regel) in enumerate(matrix.index, start=2):
         is_header = (van == "" and tot == "" and regel == "")
-        for c_idx in range(1, ws.max_column+1):
+        for c_idx in range(1, ws.max_column + 1):
             cell = ws.cell(row=r_idx, column=c_idx)
-            # dunne randen overal
             cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
             if is_header:
-                fill = PatternFill(start_color=DAY_COLORS.get(d, "FFFFFFFF"),
-                                   end_color=DAY_COLORS.get(d, "FFFFFFFF"),
-                                   fill_type="solid")
+                fill = PatternFill(
+                    start_color=DAY_COLORS.get(d, "FFFFFFFF"),
+                    end_color=DAY_COLORS.get(d, "FFFFFFFF"),
+                    fill_type="solid",
+                )
                 cell.fill = fill
                 cell.font = bold
                 cell.alignment = center
             else:
-                # kolommen B/C: tijden altijd zwart
                 if c_idx in (2, 3):
                     cell.font = Font(color="FF000000")
                     cell.alignment = wrap
                 else:
-                    # weekkolommen: kleur per subregel + wrap
-                    if regel in ("Handmatig","Wedstrijden"):
+                    if regel in ("Handmatig", "Wedstrijden"):
                         cell.font = Font(color="FFCC0000")
                     else:
                         cell.font = Font(color="FF000000")
                     cell.alignment = wrap
 
-        # dikke onderrand op dag-einde
         if r_idx in day_last_row.values():
-            for c_idx in range(1, ws.max_column+1):
+            for c_idx in range(1, ws.max_column + 1):
                 cell = ws.cell(row=r_idx, column=c_idx)
-                cell.border = Border(left=cell.border.left, right=cell.border.right,
-                                     top=cell.border.top, bottom=thick)
+                cell.border = Border(
+                    left=cell.border.left,
+                    right=cell.border.right,
+                    top=cell.border.top,
+                    bottom=thick,
+                )
 
-    # Dikke verticale scheiding tussen weekkolommen
-    for j in range(first_week_col_idx, ws.max_column+1):
-        for r in range(1, ws.max_row+1):
+    for j in range(first_week_col_idx, ws.max_column + 1):
+        for r in range(1, ws.max_row + 1):
             cell = ws.cell(row=r, column=j)
-            cell.border = Border(left=thick, right=cell.border.right,
-                                 top=cell.border.top, bottom=cell.border.bottom)
+            cell.border = Border(
+                left=thick,
+                right=cell.border.right,
+                top=cell.border.top,
+                bottom=cell.border.bottom,
+            )
 
-    # Kolombreedtes (met eenvoudige autosize)
-    ws.column_dimensions['A'].width = 12  # Dag
-    ws.column_dimensions['B'].width = 9   # Tijd-van
-    ws.column_dimensions['C'].width = 9   # Tijd-tot
+    ws.column_dimensions["A"].width = 12
+    ws.column_dimensions["B"].width = 9
+    ws.column_dimensions["C"].width = 9
     for col_cells in ws.iter_cols(min_col=first_week_col_idx, max_col=ws.max_column):
         max_len = 14
         for cell in col_cells:
             if cell.value:
                 max_len = max(max_len, len(str(cell.value)))
-        ws.column_dimensions[col_cells[0].column_letter].width = min(max(int(max_len*0.75)+2, 10), 24)
+        ws.column_dimensions[col_cells[0].column_letter].width = min(max(int(max_len * 0.75) + 2, 10), 24)
 
-    # Timestamp in A1
     now = now_naive_in_tz(tz_str)
     stamp = f"{now.day} {month_short_nl(now.month)} {now.strftime('%H:%M')}"
-    a1 = ws.cell(row=1, column=1); a1.value = stamp
-    try: a1.font = Font(italic=True, color="FF666666")
-    except Exception: pass
+    a1 = ws.cell(row=1, column=1)
+    a1.value = stamp
+    try:
+        a1.font = Font(italic=True, color="FF666666")
+    except Exception:
+        pass
 
-    ws.freeze_panes = "D2"  # tot en met Tijd-tot + header
+    ws.freeze_panes = "D2"
 
-# ===== Wedstrijden normaliseren =====
-def _strip_ckc_prefix(name: str) -> str:
-    if not isinstance(name, str):
-        return ""
-    s = name.strip(); up = s.upper()
-    if up.startswith("CKC JO") or up.startswith("CKC MO") or up.startswith("CKC O") or up.startswith("CKC VR"):
-        return s[4:].lstrip()
-    return s
 
-def normalize_program(data, tz_str: str) -> pd.DataFrame:
-    df = pd.DataFrame(data)
-    empty = pd.DataFrame(columns=["Datum","Dag","Tijd","ISO_Year","Week","HomeTeam"])
-    if df.empty:
-        return empty
+def format_activities_calendar_sheet(ws, df, TZ):
+    thin = Side(style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    c_date = _pick(df.columns, ["wedstrijddatum"])
-    c_home = _pick(df.columns, ["thuisteam"])
-    c_home_code = _pick(df.columns, ["thuisteamclubrelatiecode"])
-    
-    c_away = _pick(df.columns, ["uitteam"])
-    c_away_code = _pick(df.columns, ["uitteamclubrelatiecode"])
-    c_accommodatie = _pick(df.columns, ["accommodatie"])
-    
-    for col in (c_date, c_home, c_home_code, c_away, c_away_code, c_accommodatie):
-        if col is None or col not in df.columns:
-            return empty
+    FIXED_MAX_COL = 8
 
-    dt = pd.to_datetime(df[c_date].astype(str).str.strip(), errors="coerce", utc=True)
-    mask_ok = dt.notna()
-    if not mask_ok.any():
-        return empty
-    dt_local_naive = dt.dt.tz_convert(ZoneInfo(tz_str)).dt.tz_localize(None)
+    now = now_naive_in_tz(TZ)
 
-    df = df.loc[mask_ok].copy()
-    df["Datum"] = dt_local_naive.astype("datetime64[ns]")
+    ts_cell = ws.cell(row=1, column=1)
+    ts_cell.value = f"{now.day} {month_short_nl(now.month)} {now.strftime('%H:%M')}"
+    ts_cell.font = Font(italic=True, color="FF666666")
+    ts_cell.alignment = Alignment(horizontal="left", vertical="center")
 
-    c_accommodatie = _pick(df.columns, ["accommodatie"])
+    header_fill = PatternFill(start_color="FFD9D9D9", end_color="FFD9D9D9", fill_type="solid")
 
-    if c_accommodatie is None or c_accommodatie not in df.columns:
-        return empty
-    
-    df = df[
-        df[c_accommodatie].astype(str).str.strip().eq(CKC_ACCOMMODATIE)
-    ].copy()
-    
-    if df.empty:
-        return empty
+    for i, dag in enumerate(DAYS_NL, start=2):
+        c = ws.cell(row=1, column=i)
+        c.value = dag
+        c.font = Font(bold=True, size=15)
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = border
+        c.fill = header_fill
 
-    df["Dag"] = df["Datum"].dt.weekday.map(lambda i: DAYS_NL[i])
-    df["Tijd"] = df["Datum"].dt.strftime("%H:%M")
-    iso = df["Datum"].dt.isocalendar()
-    df["ISO_Year"] = iso.year.astype(int)
-    df["Week"] = iso.week.astype(int)
-    
-    def pick_ckc_team(r):
-        home_is_ckc = str(r[c_home_code]).strip() == CKC_CLUBRELATIECODE
-        away_is_ckc = str(r[c_away_code]).strip() == CKC_CLUBRELATIECODE
-    
-        if home_is_ckc:
-            return _strip_ckc_prefix(str(r[c_home]))
-    
-        if away_is_ckc:
-            return _strip_ckc_prefix(str(r[c_away]))
-    
-        return ""
-    
-    df["HomeTeam"] = df.apply(pick_ckc_team, axis=1)
-    df = df[df["HomeTeam"].astype(str).str.strip() != ""].copy()
-    
-    return df[["Datum","Dag","Tijd","ISO_Year","Week","HomeTeam"]]
+    ws.row_dimensions[1].height = 26
 
-# ====== normaliseer activiteiten ====
-def normalize_activities(data, tz_str: str) -> pd.DataFrame:
-    df = pd.DataFrame(data)
+    ws.column_dimensions["A"].width = 14
+    for col in range(2, 9):
+        ws.column_dimensions[get_column_letter(col)].width = 28
 
-    empty = pd.DataFrame(columns=["Datum","Dag","Tijd","ISO_Year","Week","Activiteit","Date","IsAllDay"])
-    if df.empty:
-        return empty
+    date_columns = list(df.columns[1:])
 
-    c_dt = _pick(df.columns, ["datumvan"])
-    c_name = _pick(df.columns, ["activiteit"])
-    c_heledag = _pick(df.columns, ["heledag"])
+    activities_weeks = []
+    for d in date_columns:
+        iso = pd.Timestamp(d).isocalendar()
+        pair = (iso.year, iso.week)
+        if pair not in activities_weeks:
+            activities_weeks.append(pair)
 
-    if not c_dt or not c_name:
-        return empty
+    row = 2
+    col_index = 0
+    week_index = 0
 
-    dt = pd.to_datetime(df[c_dt], errors="coerce", utc=True)
-    dt = dt.dt.tz_convert(ZoneInfo(tz_str)).dt.tz_localize(None)
+    while col_index < len(date_columns):
+        header_row = row
+        data_row = row + 1
 
-    df["Datum"] = dt
-    df = df.dropna(subset=["Datum"])
+        y, w = activities_weeks[week_index]
+        week_label = f"{y}-W{w:02d}"
 
-    # 🔹 BESTAANDE LOGICA (ongewijzigd)
-    df["Dag"] = df["Datum"].dt.weekday.map(lambda i: DAYS_NL[i])
-    df["Tijd"] = df["Datum"].dt.strftime("%H:%M")
+        color = WEEK_COLORS[week_index % len(WEEK_COLORS)]
+        week_fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
 
-    iso = df["Datum"].dt.isocalendar()
-    df["ISO_Year"] = iso.year.astype(int)
-    df["Week"] = iso.week.astype(int)
+        ws.merge_cells(start_row=header_row, start_column=1, end_row=data_row, end_column=1)
 
-    df["Activiteit"] = df[c_name].astype(str).str.strip()
+        cell = ws.cell(row=header_row, column=1)
+        cell.value = week_label
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.fill = week_fill
+        cell.border = border
 
-    # 🔹 hele dag events
-    df["IsAllDay"] = False
-    if c_heledag:
-        mask = df[c_heledag].astype(str).str.lower() == "true"
-        df.loc[mask, "Tijd"] = "00:00"
-        df.loc[mask, "IsAllDay"] = True
+        ws.cell(row=data_row, column=1).fill = week_fill
+        ws.cell(row=data_row, column=1).border = border
 
-    # 🆕 NIEUW voor kalender-grid
-    df["Date"] = df["Datum"].dt.date
+        for i in range(7):
+            col = 2 + i
+            hcell = ws.cell(row=header_row, column=col)
+            dcell = ws.cell(row=data_row, column=col)
 
-    return df[["Datum","Dag","Tijd","ISO_Year","Week","Activiteit","Date","IsAllDay"]]
+            hcell.fill = week_fill
+            hcell.border = border
+            hcell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            hcell.font = Font(bold=True, size=13)
 
-# Activiteiten-index voor overlap in Bar/CK roosterregels
-def build_activities_overlap_index(df: pd.DataFrame) -> Dict[tuple, List[Tuple[int, str]]]:
-    idx: Dict[tuple, List[Tuple[int, str]]] = {}
+            dcell.border = border
+            dcell.alignment = Alignment(vertical="top", wrap_text=True)
 
-    for _, r in df.iterrows():
-        y, w, d = int(r["ISO_Year"]), int(r["Week"]), r["Dag"]
+            if col_index >= len(date_columns):
+                hcell.value = ""
+                dcell.value = ""
+                continue
 
-        try:
-            h, m = r["Tijd"].split(":")
-            tmin = int(h)*60 + int(m)
-        except Exception:
-            continue
+            d = pd.Timestamp(date_columns[col_index])
+            iso = d.isocalendar()
 
-        txt = r["Activiteit"]
+            if (iso.year, iso.week) != (y, w):
+                hcell.value = ""
+                dcell.value = ""
+                continue
 
-        if txt:
-            idx.setdefault((y, w, d), []).append((tmin, txt))
+            hcell.value = f"{d.day:02d} {month_short_nl(d.month)}"
+            dcell.value = df.iloc[0, col_index + 1]
 
-    return idx
+            col_index += 1
 
+        ws.row_dimensions[header_row].height = 24
+        ws.row_dimensions[data_row].height = 80
+
+        row += 2
+        week_index += 1
+
+    extra_cols = ws.max_column - FIXED_MAX_COL
+    if extra_cols > 0:
+        ws.delete_cols(FIXED_MAX_COL + 1, extra_cols)
+
+    ws.freeze_panes = "B2"
+
+
+# ====================================
+# Orchestration
+# ====================================
 
 def prepare_activities(use_activities: bool,
                        add_activities_sheet: bool,
@@ -1381,16 +1437,9 @@ def prepare_activities(use_activities: bool,
     if not (use_activities or add_activities_sheet):
         return df_activities, activities_overlap_index, fetch_debug_lines
 
-    activities_url = build_activities_url(
-        ACTIVITIES_DAYS_AHEAD,
-        DEFAULT_CLIENT_ID
-    )
+    activities_url = build_activities_url(ACTIVITIES_DAYS_AHEAD, DEFAULT_CLIENT_ID)
 
-    activities_json, activities_fetch_debug = http_get_json(
-        activities_url,
-        debug,
-        stats
-    )
+    activities_json, activities_fetch_debug = http_get_json(activities_url, debug, stats)
     fetch_debug_lines.extend(activities_fetch_debug)
 
     df_activities = normalize_activities(activities_json, tz_str)
@@ -1401,145 +1450,43 @@ def prepare_activities(use_activities: bool,
 
     return df_activities, activities_overlap_index, fetch_debug_lines
 
-# ===== Handmatige input (.txt) =====
-def parse_manual_text(text: str):
-    entries = []
-    if not text:
-        return entries
-    now_aw = now_aware_in_tz(TZ)
-    monday_aw = (now_aw - pd.Timedelta(days=int(now_aw.weekday()))).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
-    for line in text.splitlines():
-        s = line.strip()
-        if not s or s.startswith("#"): continue
-        parts = s.split()
-        if len(parts) < 3: continue
-        date_str, time_str = parts[0], parts[1]
-        txt = " ".join(parts[2:]).strip()
-        try:
-            dt_aw = pd.Timestamp(f"{date_str} {time_str}", tz=ZoneInfo(TZ))
-        except Exception:
-            continue
-        if dt_aw < monday_aw: continue
-        day_name = DAYS_NL[int(dt_aw.weekday())]
-        starts = [a for a, b in DEFAULT_SLOTS.get(day_name, [])]
-        if time_str not in starts: continue
-        iso = dt_aw.isocalendar()
-        entries.append({
-            "date": dt_aw.tz_convert(None),
-            "time_from": time_str,
-            "text": txt,
-            "iso_year": int(iso.year),
-            "iso_week": int(iso.week),
-            "day": day_name,
-        })
-    return entries
 
-# -------- Dropbox helper --------
-def _ensure_dropbox_direct(url: str) -> str:
-    if not url or "dropbox.com" not in url:
-        return url
-    try:
-        pr = urlparse(url)
-        qs = parse_qs(pr.query); qs["dl"] = ["1"]
-        new_query = urlencode({k: v[0] for k, v in qs.items()})
-        return urlunparse((pr.scheme, pr.netloc, pr.path, pr.params, new_query, pr.fragment))
-    except Exception:
-        return url.replace("dl=0", "dl=1") if "dl=" in url else (url + ("&" if "?" in url else "?") + "dl=1")
-
-def read_manual_text_from_dropbox(timeout: int = 30) -> str:
-    direct = _ensure_dropbox_direct(DROPBOX_INPUT_URL)
-    r = requests.get(direct, timeout=timeout)
-    r.raise_for_status()
-    return r.text
-
-
-def compute_weeks(df_list, annotations, tz_str: str):
-    pairs = set()
-
-    for df in df_list:
-        if df is None or df.empty:
-            continue
-        for y, w in zip(df["ISO_Year"], df["Week"]):
-            pairs.add((int(y), int(w)))
-
-    now = now_naive_in_tz(tz_str)
-    iso = now.isocalendar()
-    pairs.add((int(iso.year), int(iso.week)))
-
-    pairs |= {(a["iso_year"], a["iso_week"]) for a in annotations}
-
-    pairs = sorted(pairs)
-    week_mondays = {p: pd.Timestamp.fromisocalendar(p[0], p[1], 1) for p in pairs}
-
-    return pairs, week_mondays
-
-
-def build_roster_matrix(
-    slots: Dict[str, List[Tuple[str, str]]],
-    days_subset,
-    weeks_pairs,
-    week_mondays,
-    tz_str: str,
-    week_label_style: str
-) -> pd.DataFrame:
-    return build_empty_matrix(
-        slots=slots,
-        tz_str=tz_str,
-        days_subset=days_subset,
-        horizon_weeks_if_empty=4,
-        week_label_style=week_label_style,
-        weeks_pairs=weeks_pairs,
-        week_mondays=week_mondays,
-    )
-
-
-
-# ===== Excel bouwen =====
 def make_excel(df_bar, df_ck, annotations,
                use_matches=True,
                use_overrides=True,
                use_activities=True,
                add_activities_sheet=True,
                stats: Optional[dict] = None):
-
     if stats is None:
         stats = new_sportlink_stats()
 
-    df_activities = pd.DataFrame()
-    activities_overlap_index = {}
     matrix_activities_calendar = None
-    
+
     slot_warnings = []
     placement_warnings = []
     fetch_debug_lines = []
 
-    # ===== Activiteiten voorbereiden =====
     df_activities, activities_overlap_index, activities_fetch_debug = prepare_activities(
         use_activities=use_activities,
         add_activities_sheet=add_activities_sheet,
         tz_str=TZ,
         debug=debug_fetch,
-        stats=stats
+        stats=stats,
     )
     fetch_debug_lines.extend(activities_fetch_debug)
-    
-    # ===== Slots één keer opbouwen =====
+
     merged_slots, slot_warnings = merge_custom_slots_into_defaults(
         [df_bar, df_ck],
         DEFAULT_SLOTS,
-        df_activities if use_activities else None
+        df_activities if use_activities else None,
     )
 
-    # ===== Weken bepalen =====
     weeks_pairs, week_mondays = compute_weeks(
         [df_bar, df_ck],
         annotations,
-        TZ
+        TZ,
     )
 
-    # ===== Lege matrixen bouwen =====
     days_subset_ck = ["Zaterdag"] if SAT_ONLY_CK else None
 
     matrix_bar = build_roster_matrix(
@@ -1548,7 +1495,7 @@ def make_excel(df_bar, df_ck, annotations,
         weeks_pairs,
         week_mondays,
         TZ,
-        WEEK_LABEL
+        WEEK_LABEL,
     )
 
     matrix_ck = build_roster_matrix(
@@ -1557,35 +1504,31 @@ def make_excel(df_bar, df_ck, annotations,
         weeks_pairs,
         week_mondays,
         TZ,
-        WEEK_LABEL
+        WEEK_LABEL,
     )
 
-    # ===== Namen vullen =====
     warn_bar = fill_names(matrix_bar, df_bar, merged_slots, WEEK_LABEL)
     warn_ck = fill_names(matrix_ck, df_ck, merged_slots, WEEK_LABEL)
     placement_warnings.extend(warn_bar)
     placement_warnings.extend(warn_ck)
 
-    # ===== Overrides toepassen =====
     override_warnings = []
     override_error = None
     override_debug = []
-    
+
     if use_overrides:
         overrides, override_warnings, override_error, override_debug = load_afgeschermd_overrides_from_dropbox(debug_fetch)
-    
+
         override_debug.extend(
             apply_afgeschermd_overrides(matrix_bar, overrides, "bar", WEEK_LABEL, debug_fetch)
         )
         override_debug.extend(
             apply_afgeschermd_overrides(matrix_ck, overrides, "ck", WEEK_LABEL, debug_fetch)
-        )        
-        
-    # ===== Handmatige input vullen =====
+        )
+
     fill_manual(matrix_bar, annotations, merged_slots, WEEK_LABEL)
     fill_manual(matrix_ck, annotations, merged_slots, WEEK_LABEL)
 
-    # ===== Wedstrijden + activiteiten in rooster vullen =====
     if use_matches:
         program_url = build_program_url(
             PROGRAM_DAYS_AHEAD,
@@ -1594,7 +1537,7 @@ def make_excel(df_bar, df_ck, annotations,
             eigenwedstrijden="JA",
             thuis="JA",
             uit="JA",
-            gebruiklokaleteamgegevens="NEE"
+            gebruiklokaleteamgegevens="NEE",
         )
         program_json, program_fetch_debug = http_get_json(program_url, debug_fetch, stats)
         fetch_debug_lines.extend(program_fetch_debug)
@@ -1608,41 +1551,35 @@ def make_excel(df_bar, df_ck, annotations,
             match_overlap_index,
             WEEK_LABEL,
             merged_slots,
-            activities_overlap_index
+            activities_overlap_index,
         )
         fill_schedule_items(
             matrix_ck,
             match_overlap_index,
             WEEK_LABEL,
             merged_slots,
-            activities_overlap_index
-        )  
-    
-    # ===== Lege subregels opruimen =====
+            activities_overlap_index,
+        )
+
     matrix_bar = prune_empty_subrows(matrix_bar)
     matrix_ck = prune_empty_subrows(matrix_ck)
 
-    # ===== Activiteiten-kalender sheet bouwen =====
     if add_activities_sheet and not df_activities.empty:
         matrix_activities_calendar = build_activities_calendar_matrix(df_activities)
 
-    # ===== Excel schrijven =====
     bio = io.BytesIO()
 
     with pd.ExcelWriter(bio, engine="openpyxl") as writer:
-        # BarRooster
         matrix_bar.to_excel(writer, sheet_name="BarRooster")
         ws_bar = writer.sheets["BarRooster"]
         ws_bar.delete_cols(4)
         format_sheet(ws_bar, matrix_bar, merged_slots, TZ)
 
-        # CommissieKamer
         matrix_ck.to_excel(writer, sheet_name="CommissieKamer")
         ws_ck = writer.sheets["CommissieKamer"]
         ws_ck.delete_cols(4)
         format_sheet(ws_ck, matrix_ck, merged_slots, TZ)
 
-        # Activiteiten
         if matrix_activities_calendar is not None:
             sheet_name = "Activiteiten"
 
@@ -1650,15 +1587,11 @@ def make_excel(df_bar, df_ck, annotations,
                 writer,
                 sheet_name=sheet_name,
                 index=False,
-                header=False
+                header=False,
             )
 
             ws_act = writer.sheets[sheet_name]
-            format_activities_calendar_sheet(
-                ws_act,
-                matrix_activities_calendar,
-                TZ
-            )
+            format_activities_calendar_sheet(ws_act, matrix_activities_calendar, TZ)
 
     bio.seek(0)
     return (
@@ -1668,27 +1601,24 @@ def make_excel(df_bar, df_ck, annotations,
         override_warnings,
         override_error,
         override_debug,
-        fetch_debug_lines
+        fetch_debug_lines,
     )
 
-# =========================
-# UI (simpel)
-# =========================
+
+# ====================================
+# Streamlit UI
+# ====================================
+
 st.set_page_config(page_title=f"CKC Rooster generator v{__version__}", page_icon="🗓️", layout="centered")
 st.markdown("<h1 style='text-align:center;margin-bottom:0'>CKC Rooster generator</h1>", unsafe_allow_html=True)
 st.markdown(f"<h5 style='text-align:center;margin-top:0.25rem;color:#666'>versie {__version__}</h5>", unsafe_allow_html=True)
 st.caption("Sportlink → Excel · vaste instellingen (Europe/Amsterdam), weekoffset=-1, gefilterd vanaf huidige week")
 
-add_activities_sheet = st.checkbox(
-    "Toon activiteiten kalender",
-    value=True
-)
+add_activities_sheet = st.checkbox("Toon activiteiten kalender", value=True)
 use_dropbox = st.checkbox("Handmatige input via Dropbox meenemen", value=True)
 use_matches = st.checkbox("Wedstrijdinfo toevoegen", value=True)
 use_overrides = st.checkbox("Gebruik Afgeschermd overrides", value=True)
 use_activities = st.checkbox("Verenigingsagenda toevoegen", value=True)
-
-# debug_fetch = st.checkbox("Toon Sportlink fetch logging", value=False)
 
 if st.checkbox("Toon Sportlink fetch logging (debug modus)", key="debug_fetch"):
     st.cache_data.clear()
@@ -1700,24 +1630,22 @@ else:
 if st.button("Genereer rooster", use_container_width=True):
     try:
         with st.spinner("Ophalen en bouwen…"):
-            # ===== lokale stats + debug-verzamelaars =====
             sportlink_stats = new_sportlink_stats()
             fetch_debug_lines = []
 
-            # ===== Vrijwilligersdata ophalen =====
             urls_bar = build_urls(
                 BAR_CODES,
                 DAYS_AHEAD,
                 DEFAULT_CLIENT_ID,
                 weekoffset=WEEK_OFFSET,
-                fields=FIELDS
+                fields=FIELDS,
             )
             urls_ck = build_urls(
                 CK_CODES,
                 DAYS_AHEAD,
                 DEFAULT_CLIENT_ID,
                 weekoffset=WEEK_OFFSET,
-                fields=FIELDS
+                fields=FIELDS,
             )
 
             all_bar, fetch_debug_bar = fetch_all(urls_bar, debug_fetch, sportlink_stats)
@@ -1726,11 +1654,9 @@ if st.button("Genereer rooster", use_container_width=True):
             fetch_debug_lines.extend(fetch_debug_bar)
             fetch_debug_lines.extend(fetch_debug_ck)
 
-            # ===== Vrijwilligersdata normaliseren / filteren =====
             df_bar = filter_from_current_week(normalize_dataframe(all_bar, TZ), TZ)
             df_ck = filter_from_current_week(normalize_dataframe(all_ck, TZ), TZ)
 
-            # ===== Handmatige input ophalen =====
             manual_text = ""
             if use_dropbox:
                 direct = _ensure_dropbox_direct(DROPBOX_INPUT_URL)
@@ -1742,7 +1668,6 @@ if st.button("Genereer rooster", use_container_width=True):
 
             annotations = parse_manual_text(manual_text)
 
-            # ===== Excel bouwen =====
             (
                 xlsx,
                 slot_warnings,
@@ -1750,7 +1675,7 @@ if st.button("Genereer rooster", use_container_width=True):
                 override_warnings,
                 override_error,
                 override_debug,
-                make_excel_fetch_debug
+                make_excel_fetch_debug,
             ) = make_excel(
                 df_bar,
                 df_ck,
@@ -1759,12 +1684,11 @@ if st.button("Genereer rooster", use_container_width=True):
                 use_overrides=use_overrides,
                 use_activities=use_activities,
                 add_activities_sheet=add_activities_sheet,
-                stats=sportlink_stats
+                stats=sportlink_stats,
             )
 
             fetch_debug_lines.extend(make_excel_fetch_debug)
 
-        # ===== Functionele meldingen =====
         if slot_warnings:
             st.info("ℹ️ Tijdsloten automatisch toegevoegd:\n\n- " + "\n- ".join(slot_warnings))
 
@@ -1780,7 +1704,6 @@ if st.button("Genereer rooster", use_container_width=True):
         if override_error:
             st.error(override_error)
 
-        # ===== Debug-meldingen =====
         if debug_fetch and override_debug:
             for msg in override_debug:
                 st.write(msg)
@@ -1789,7 +1712,6 @@ if st.button("Genereer rooster", use_container_width=True):
             for msg in fetch_debug_lines:
                 st.write(msg)
 
-        # ===== Sportlink status =====
         retries = sportlink_stats["retries"]
         failures = sportlink_stats["failures"]
 
@@ -1800,7 +1722,6 @@ if st.button("Genereer rooster", use_container_width=True):
         else:
             st.success("Sportlink status: OK")
 
-        # ===== Download =====
         st.success("Klaar! Download hieronder het Excel-bestand.")
         st.download_button(
             "⬇️ Download rooster.xlsx",
