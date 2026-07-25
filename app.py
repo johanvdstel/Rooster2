@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*--
 # ===== versie =======================
 #
-__version__ = "3.6.2"
-# Activiteiten rooster vanaf nu
+__version__ = "3.6.3"
+# Activiteiten rooster font aanpassing
 #
 # ====================================
 
@@ -1528,7 +1528,11 @@ def format_activities_calendar_sheet(ws, df, TZ):
 
             dcell.border = border
             dcell.alignment = Alignment(vertical="top", wrap_text=True)
-
+            dcell.font = Font(
+                color="FF0070C0",
+                size=12
+            )
+            
             if col_index >= len(date_columns):
                 hcell.value = ""
                 dcell.value = ""
@@ -1548,7 +1552,7 @@ def format_activities_calendar_sheet(ws, df, TZ):
             col_index += 1
 
         ws.row_dimensions[header_row].height = 24
-        ws.row_dimensions[data_row].height = 80
+        ws.row_dimensions[data_row].height = 95
 
         row += 2
         week_index += 1
