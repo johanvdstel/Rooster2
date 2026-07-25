@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*--
 # ===== versie =======================
 #
-__version__ = "3.5.0"
-# herstructurering van de code
+__version__ = "3.6.0"
+# days_ahead gelijk getrokken en dynamisch gemaakt
 #
 # ====================================
 
@@ -53,7 +53,7 @@ warnings.filterwarnings(
 debug_fetch = False
 DEFAULT_CLIENT_ID = "K662D1WXrt"
 TZ = "Europe/Amsterdam"
-DAYS_AHEAD = 60
+DEFAULT_DAYS_AHEAD = 60
 WEEK_OFFSET = -1
 FIELDS = "naam,datumvanaf,datumtot,tijdvanaf,tijdtot,lokatie,heledag"
 
@@ -62,13 +62,11 @@ CK_CODES = ["442"]
 WEEK_LABEL = "short"          # of "iso"
 SAT_ONLY_CK = True            # CommissieKamer alleen zaterdag
 
-ACTIVITIES_DAYS_AHEAD = 90
 ACTIVITIES_FIELDS = (
     "kalendernaam,kalendersoort,activiteit,datumvan,datumtm,"
     "heledag,beheerders,opmerkingen,plaats,url"
 )
 
-PROGRAM_DAYS_AHEAD = 60
 PROGRAM_FIELDS = (
     "wedstrijddatum,wedstrijdnummer,thuisteamclubrelatiecode,"
     "uitteamclubrelatiecode,thuisteam,uitteam,competitiesoort,"
@@ -648,23 +646,36 @@ def parse_manual_text(text: str):
 # Week- en indexhelpers
 # ====================================
 
-def compute_weeks(df_list, annotations, tz_str: str):
-    pairs = set()
+def compute_weeks(days_ahead: int, tz_str: str):
+    """
+    Maak alle roosterweken vanaf de huidige week tot en met
+    de week waarin de opgegeven horizon eindigt.
 
-    for df in df_list:
-        if df is None or df.empty:
-            continue
-        for y, w in zip(df["ISO_Year"], df["Week"]):
-            pairs.add((int(y), int(w)))
+    De beschikbare vrijwilligersdata heeft hier geen invloed op.
+    """
+    days_ahead = max(1, int(days_ahead))
 
-    now = now_naive_in_tz(tz_str)
-    iso = now.isocalendar()
-    pairs.add((int(iso.year), int(iso.week)))
+    today = now_naive_in_tz(tz_str).normalize()
+    start_monday = monday_of_week(today)
 
-    pairs |= {(a["iso_year"], a["iso_week"]) for a in annotations}
+    horizon_end = today + pd.Timedelta(days=days_ahead - 1)
+    end_monday = monday_of_week(horizon_end)
 
-    pairs = sorted(pairs)
-    week_mondays = {p: pd.Timestamp.fromisocalendar(p[0], p[1], 1) for p in pairs}
+    mondays = pd.date_range(
+        start=start_monday,
+        end=end_monday,
+        freq="7D",
+    )
+
+    pairs = []
+    week_mondays = {}
+
+    for monday in mondays:
+        iso = monday.isocalendar()
+        pair = (int(iso.year), int(iso.week))
+
+        pairs.append(pair)
+        week_mondays[pair] = monday
 
     return pairs, week_mondays
 
@@ -1424,6 +1435,7 @@ def format_activities_calendar_sheet(ws, df, TZ):
 
 def prepare_activities(use_activities: bool,
                        add_activities_sheet: bool,
+                       days_ahead: int,
                        tz_str: str,
                        debug: bool = False,
                        stats: Optional[dict] = None):
@@ -1437,7 +1449,7 @@ def prepare_activities(use_activities: bool,
     if not (use_activities or add_activities_sheet):
         return df_activities, activities_overlap_index, fetch_debug_lines
 
-    activities_url = build_activities_url(ACTIVITIES_DAYS_AHEAD, DEFAULT_CLIENT_ID)
+    activities_url = build_activities_url(days_ahead, DEFAULT_CLIENT_ID)
 
     activities_json, activities_fetch_debug = http_get_json(activities_url, debug, stats)
     fetch_debug_lines.extend(activities_fetch_debug)
@@ -1452,6 +1464,7 @@ def prepare_activities(use_activities: bool,
 
 
 def make_excel(df_bar, df_ck, annotations,
+               days_ahead: int,
                use_matches=True,
                use_overrides=True,
                use_activities=True,
@@ -1469,6 +1482,7 @@ def make_excel(df_bar, df_ck, annotations,
     df_activities, activities_overlap_index, activities_fetch_debug = prepare_activities(
         use_activities=use_activities,
         add_activities_sheet=add_activities_sheet,
+        days_ahead=days_ahead,
         tz_str=TZ,
         debug=debug_fetch,
         stats=stats,
@@ -1482,9 +1496,8 @@ def make_excel(df_bar, df_ck, annotations,
     )
 
     weeks_pairs, week_mondays = compute_weeks(
-        [df_bar, df_ck],
-        annotations,
-        TZ,
+        days_ahead=days_ahead,
+        tz_str=TZ,
     )
 
     days_subset_ck = ["Zaterdag"] if SAT_ONLY_CK else None
@@ -1531,7 +1544,7 @@ def make_excel(df_bar, df_ck, annotations,
 
     if use_matches:
         program_url = build_program_url(
-            PROGRAM_DAYS_AHEAD,
+            days_ahead,
             DEFAULT_CLIENT_ID,
             PROGRAM_FIELDS,
             eigenwedstrijden="JA",
@@ -1614,6 +1627,20 @@ st.markdown("<h1 style='text-align:center;margin-bottom:0'>CKC Rooster generator
 st.markdown(f"<h5 style='text-align:center;margin-top:0.25rem;color:#666'>versie {__version__}</h5>", unsafe_allow_html=True)
 st.caption("Sportlink → Excel · vaste instellingen (Europe/Amsterdam), weekoffset=-1, gefilterd vanaf huidige week")
 
+days_ahead = int(
+    st.number_input(
+        "Aantal dagen vooruit",
+        min_value=1,
+        max_value=365,
+        value=DEFAULT_DAYS_AHEAD,
+        step=1,
+        help=(
+            "Aantal dagen waarvoor vrijwilligersdiensten, wedstrijden "
+            "en verenigingsactiviteiten worden opgehaald en weergegeven."
+        ),
+    )
+)
+
 add_activities_sheet = st.checkbox("Toon activiteiten kalender", value=True)
 use_dropbox = st.checkbox("Handmatige input via Dropbox meenemen", value=True)
 use_matches = st.checkbox("Wedstrijdinfo toevoegen", value=True)
@@ -1635,14 +1662,14 @@ if st.button("Genereer rooster", use_container_width=True):
 
             urls_bar = build_urls(
                 BAR_CODES,
-                DAYS_AHEAD,
+                days_ahead,
                 DEFAULT_CLIENT_ID,
                 weekoffset=WEEK_OFFSET,
                 fields=FIELDS,
             )
             urls_ck = build_urls(
                 CK_CODES,
-                DAYS_AHEAD,
+                days_ahead,
                 DEFAULT_CLIENT_ID,
                 weekoffset=WEEK_OFFSET,
                 fields=FIELDS,
@@ -1680,6 +1707,7 @@ if st.button("Genereer rooster", use_container_width=True):
                 df_bar,
                 df_ck,
                 annotations,
+                days_ahead=days_ahead,
                 use_matches=use_matches,
                 use_overrides=use_overrides,
                 use_activities=use_activities,
