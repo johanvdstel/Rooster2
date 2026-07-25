@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*--
 # ===== versie =======================
 #
-__version__ = "3.6.3"
-# Activiteiten rooster font aanpassing
+__version__ = "3.6.4"
+# Activiteiten font kleur aanpassing
 #
 # ====================================
 
@@ -109,7 +109,7 @@ DEFAULT_SLOTS: Dict[str, List[Tuple[str, str]]] = {
 DROPBOX_INPUT_URL = "https://www.dropbox.com/scl/fi/ukcs87y9h1j27uyzcotig/rooster_input.txt?rlkey=fx0ayzshabo7zikun620m61hh&st=vtrlzr8k&dl=0"
 DROPBOX_OVERRIDE_URL = "https://www.dropbox.com/scl/fi/w1711x6bzna5lniz0cvkw/Afgeschermd.txt?rlkey=cy3ltl3j427eqtg3k9ylwvc01&st=e6z7qa2n&dl=0"
 
-REGELS = ["Handmatig", "Wedstrijden", "Namen"]
+REGELS = ["Handmatig", "Wedstrijden", "Activiteiten", "Namen"]
 
 
 # ====================================
@@ -1200,71 +1200,151 @@ def fill_schedule_items(
     match_index,
     week_label_style: str,
     slots: Dict[str, List[Tuple[str, str]]],
-    activities_overlap_index: Optional[Dict[tuple, List[Tuple[int, str]]]] = None,
+    activities_overlap_index: Optional[
+        Dict[tuple, List[Tuple[int, str]]]
+    ] = None,
 ):
     """
-    Vul de 'Wedstrijden'-regels van de matrix met:
-    - thuiswedstrijden uit match_index
-    - verenigingsactiviteiten uit activities_overlap_index
+    Vul afzonderlijke roosterregels met:
+
+    - thuiswedstrijden op de regel 'Wedstrijden'
+    - verenigingsactiviteiten op de regel 'Activiteiten'
+
+    Activiteiten tonen hun werkelijke aanvangstijd.
+    Activiteiten met tijd 00:00 worden als gehele-dagactiviteit
+    weergegeven met een kalender-icoon.
     """
     cols = list(matrix.columns)
 
     if activities_overlap_index is None:
         activities_overlap_index = {}
 
-    for (d, van, tot, regel) in matrix.index:
-        if not (van and tot and regel == "Wedstrijden"):
+    for (dag, van, tot, regel) in matrix.index:
+        if not van or not tot:
             continue
 
-        v_from = _hhmm_to_minutes(van)
-        v_to = _hhmm_to_minutes(tot)
+        if regel not in ("Wedstrijden", "Activiteiten"):
+            continue
 
-        if v_from < 0 or v_to <= v_from:
+        slot_start = _hhmm_to_minutes(van)
+        slot_end = _hhmm_to_minutes(tot)
+
+        if slot_start < 0 or slot_end <= slot_start:
             continue
 
         for label in cols:
             if week_label_style == "iso":
-                parts = label.split("-W")
-                y, w = int(parts[0]), int(parts[1])
-            else:
                 try:
-                    w = int(label.split()[1])
+                    parts = label.split("-W")
+                    year = int(parts[0])
+                    week = int(parts[1])
                 except Exception:
                     continue
-                y = now_naive_in_tz(TZ).isocalendar().year
+            else:
+                try:
+                    week = int(label.split()[1])
+                except Exception:
+                    continue
 
-            match_items = match_index.get((y, w, d), [])
-            activities = activities_overlap_index.get((y, w, d), [])
+                year = now_naive_in_tz(TZ).isocalendar().year
 
-            if not match_items and not activities:
-                continue
+            key_index = (year, week, dag)
 
-            grouped = {}
+            if regel == "Wedstrijden":
+                items = match_index.get(key_index, [])
 
-            for tmin, team in match_items:
-                if v_from <= tmin < v_to:
-                    grouped.setdefault(tmin, []).append(team)
+                grouped_matches = {}
 
-            for tmin, act in activities:
-                if v_from <= tmin < v_to:
-                    grouped.setdefault(tmin, []).append(act)
+                for time_minutes, team in items:
+                    if slot_start <= time_minutes < slot_end:
+                        grouped_matches.setdefault(
+                            time_minutes,
+                            [],
+                        ).append(team)
 
-            if not grouped:
-                continue
+                if not grouped_matches:
+                    continue
 
-            lines = []
-            for tmin in sorted(grouped.keys()):
-                hh = tmin // 60
-                mm = tmin % 60
-                tijd = f"{hh:02d}:{mm:02d}"
-                teams = ", ".join(grouped[tmin])
-                lines.append(f"{tijd}: {teams}")
+                lines = []
 
-            text = "\n".join(lines)
+                for time_minutes in sorted(grouped_matches):
+                    hour = time_minutes // 60
+                    minute = time_minutes % 60
+                    time_text = f"{hour:02d}:{minute:02d}"
 
-            key = (d, van, tot, "Wedstrijden")
-            if key in matrix.index:
-                matrix.loc[key, label] = text
+                    teams = ", ".join(
+                        grouped_matches[time_minutes]
+                    )
+
+                    lines.append(f"{time_text}: {teams}")
+
+                row_key = (
+                    dag,
+                    van,
+                    tot,
+                    "Wedstrijden",
+                )
+
+                if row_key in matrix.index:
+                    matrix.loc[row_key, label] = "\n".join(lines)
+
+            elif regel == "Activiteiten":
+                items = activities_overlap_index.get(
+                    key_index,
+                    [],
+                )
+
+                grouped_activities = {}
+
+                for time_minutes, activity in items:
+                    if time_minutes == 0:
+                        # Een activiteit voor de gehele dag plaatsen
+                        # we in het eerste beschikbare slot van die dag.
+                        first_slot = slots.get(dag, [])[0] if slots.get(dag) else None
+
+                        if first_slot != (van, tot):
+                            continue
+
+                    elif not (
+                        slot_start <= time_minutes < slot_end
+                    ):
+                        continue
+
+                    grouped_activities.setdefault(
+                        time_minutes,
+                        [],
+                    ).append(activity)
+
+                if not grouped_activities:
+                    continue
+
+                lines = []
+
+                for time_minutes in sorted(grouped_activities):
+                    activities = ", ".join(
+                        grouped_activities[time_minutes]
+                    )
+
+                    if time_minutes == 0:
+                        lines.append(f"📅 {activities}")
+                    else:
+                        hour = time_minutes // 60
+                        minute = time_minutes % 60
+                        time_text = f"{hour:02d}:{minute:02d}"
+
+                        lines.append(
+                            f"{time_text}: {activities}"
+                        )
+
+                row_key = (
+                    dag,
+                    van,
+                    tot,
+                    "Activiteiten",
+                )
+
+                if row_key in matrix.index:
+                    matrix.loc[row_key, label] = "\n".join(lines)
 
 
 def apply_afgeschermd_overrides(matrix: pd.DataFrame,
@@ -1381,7 +1461,12 @@ def format_sheet(ws, matrix: pd.DataFrame, slots: Dict[str, List[Tuple[str, str]
 
     day_last_row = {}
     for r_idx, (d, van, tot, regel) in enumerate(matrix.index, start=2):
-        if van and regel in ("Handmatig", "Wedstrijden", "Namen"):
+        if van and regel in (
+            "Handmatig",
+            "Wedstrijden",
+            "Activiteiten",
+            "Namen",
+        ):
             day_last_row[d] = r_idx
 
     for r_idx, (d, van, tot, regel) in enumerate(matrix.index, start=2):
@@ -1406,6 +1491,8 @@ def format_sheet(ws, matrix: pd.DataFrame, slots: Dict[str, List[Tuple[str, str]
                 else:
                     if regel in ("Handmatig", "Wedstrijden"):
                         cell.font = Font(color="FFCC0000")
+                    elif regel == "Activiteiten":
+                        cell.font = Font(color="FF0070C0")
                     else:
                         cell.font = Font(color="FF000000")
                     cell.alignment = wrap
