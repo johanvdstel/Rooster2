@@ -1864,9 +1864,9 @@ days_ahead = int(
 )
 
 add_activities_sheet = st.checkbox("Toon activiteiten kalender", value=True)
-use_dropbox = st.checkbox("Handmatige input via Dropbox meenemen", value=True)
+use_dropbox = st.checkbox("Handmatige input via DropBox meenemen", value=True)
 use_matches = st.checkbox("Wedstrijdinfo toevoegen", value=True)
-use_overrides = st.checkbox("Gebruik Afgeschermd overrides", value=True)
+use_overrides = st.checkbox("Gebruik Afgeschermd overrides uit DropBox", value=True)
 use_activities = st.checkbox("Verenigingsagenda toevoegen", value=True)
 
 if st.checkbox("Toon Sportlink fetch logging (debug modus)", key="debug_fetch"):
