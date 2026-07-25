@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*--
 # ===== versie =======================
 #
-__version__ = "3.6.1"
-# Verfijnder foutafhandeling + shifttijden
+__version__ = "3.6.2"
+# Activiteiten rooster vanaf nu
 #
 # ====================================
 
@@ -1040,7 +1040,11 @@ def build_activities_calendar_matrix(df_activities):
     df["date"] = pd.to_datetime(df["Date"]).dt.date
 
     if "Tijd" in df.columns:
-        df["text"] = df["Tijd"].astype(str) + " " + df["Activiteit"].astype(str)
+        df["text"] = (
+            df["Tijd"].astype(str)
+            + " "
+            + df["Activiteit"].astype(str)
+        )
     else:
         df["text"] = df["Activiteit"].astype(str)
 
@@ -1051,15 +1055,29 @@ def build_activities_calendar_matrix(df_activities):
 
     grouped = df.groupby("date")["text"].apply(list)
 
-    first_date = min(grouped.index)
-    last_date = max(grouped.index)
+    today = now_naive_in_tz(TZ).normalize()
+    start = monday_of_week(today)
+    
+    last_date = pd.Timestamp(max(grouped.index))
+    last_sunday = last_date + pd.Timedelta(
+        days=6 - last_date.weekday()
+    )
 
-    start = first_date - pd.Timedelta(days=first_date.weekday())
-    end = last_date + pd.Timedelta(days=(6 - last_date.weekday()))
+    end = max(
+        last_sunday,
+        start + pd.Timedelta(days=6),
+    )
 
-    all_dates = pd.date_range(start=start, end=end, freq="D")
+    all_dates = pd.date_range(
+        start=start,
+        end=end,
+        freq="D",
+    )
 
-    matrix = pd.DataFrame(index=[0], columns=all_dates)
+    matrix = pd.DataFrame(
+        index=[0],
+        columns=all_dates,
+    )
 
     for d in all_dates:
         if d.date() in grouped:
