@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*--
 # ===== versie =======================
 #
-__version__ = "3.6.0"
-# days_ahead gelijk getrokken en dynamisch gemaakt
+__version__ = "3.6.1"
+# Verfijnder foutafhandeling + shifttijden
 #
 # ====================================
 
@@ -100,9 +100,9 @@ DEFAULT_SLOTS: Dict[str, List[Tuple[str, str]]] = {
     "Woensdag":  [("17:00", "18:00"), ("18:00", "19:00"), ("19:00", "22:00")],
     "Donderdag": [("18:00", "19:00"), ("19:00", "20:00"), ("20:00", "22:30")],
     "Vrijdag":   [("18:00", "20:30"), ("20:30", "23:00")],
-    "Zaterdag":  [("07:30", "09:00"), ("09:00", "12:00"),
-                  ("12:00", "15:00"), ("15:00", "18:00"),
-                  ("18:00", "21:00"), ("21:00", "23:30")],
+    "Zaterdag":  [("07:30", "10:00"), ("10:00", "12:30"),
+                  ("12:30", "15:00"), ("15:00", "17:30"),
+                  ("17:30", "20:00"), ("20:00", "22:30")],
     "Zondag":    [("10:00", "12:30"), ("12:30", "15:00")],
 }
 
@@ -282,19 +282,25 @@ def http_get_json(url: str, debug: bool = False, stats: Optional[dict] = None):
 
             return data, debug_lines
 
-        except (
-            requests.exceptions.ConnectionError,
-            requests.exceptions.Timeout,
-            requests.exceptions.ChunkedEncodingError,
-            requests.exceptions.ContentDecodingError,
-            requests.exceptions.HTTPError,
-            ValueError,
-        ):
+        except requests.exceptions.SSLError as e:
+            stats["failures"] += 1
+
             if debug:
-                if endpoint == "vrijwilligers":
-                    debug_lines.append(f"⚠️ Netwerkfout code {task_code} ({attempt}/{max_retries})")
-                else:
-                    debug_lines.append(f"⚠️ Netwerkfout {endpoint} ({attempt}/{max_retries})")
+                debug_lines.append(
+                    f"🔒 SSL-certificaatfout bij {endpoint}"
+                    + (f" code {task_code}" if task_code else "")
+                    + f": {type(e).__name__}: {e}"
+                )
+
+            return [], debug_lines
+
+        except requests.exceptions.Timeout as e:
+            if debug:
+                debug_lines.append(
+                    f"⏱️ Timeout bij {endpoint}"
+                    + (f" code {task_code}" if task_code else "")
+                    + f" ({attempt}/{max_retries}): {e}"
+                )
 
             if attempt < max_retries:
                 stats["retries"] += 1
@@ -303,12 +309,119 @@ def http_get_json(url: str, debug: bool = False, stats: Optional[dict] = None):
                 stats["failures"] += 1
 
                 if debug:
-                    if endpoint == "vrijwilligers":
-                        debug_lines.append(f"❌ Ophalen mislukt voor vrijwilligers code {task_code}")
-                    else:
-                        debug_lines.append(f"❌ Ophalen mislukt voor {endpoint}")
+                    debug_lines.append(
+                        f"❌ Ophalen mislukt voor {endpoint}"
+                        + (f" code {task_code}" if task_code else "")
+                        + " na meerdere timeouts"
+                    )
 
                 return [], debug_lines
+
+        except requests.exceptions.HTTPError as e:
+            status_code = (
+                e.response.status_code
+                if e.response is not None
+                else "onbekend"
+            )
+
+            response_text = ""
+
+            if e.response is not None:
+                try:
+                    response_text = e.response.text.strip()[:500]
+                except Exception:
+                    response_text = ""
+
+            if debug:
+                debug_lines.append(
+                    f"🌐 HTTP-fout bij {endpoint}"
+                    + (f" code {task_code}" if task_code else "")
+                    + f" ({attempt}/{max_retries}): status {status_code}"
+                )
+
+                if response_text:
+                    debug_lines.append(
+                        f"Serverresponse: {response_text}"
+                    )
+
+            if attempt < max_retries:
+                stats["retries"] += 1
+                time.sleep(1.5)
+            else:
+                stats["failures"] += 1
+
+                if debug:
+                    debug_lines.append(
+                        f"❌ Ophalen mislukt voor {endpoint}"
+                        + (f" code {task_code}" if task_code else "")
+                        + f" — HTTP-status {status_code}"
+                    )
+
+                return [], debug_lines
+
+        except (
+            requests.exceptions.ConnectionError,
+            requests.exceptions.ChunkedEncodingError,
+            requests.exceptions.ContentDecodingError,
+        ) as e:
+            if debug:
+                debug_lines.append(
+                    f"🔌 Verbindingsfout bij {endpoint}"
+                    + (f" code {task_code}" if task_code else "")
+                    + f" ({attempt}/{max_retries}): "
+                    + f"{type(e).__name__}: {e}"
+                )
+
+            if attempt < max_retries:
+                stats["retries"] += 1
+                time.sleep(1.5)
+            else:
+                stats["failures"] += 1
+
+                if debug:
+                    debug_lines.append(
+                        f"❌ Ophalen mislukt voor {endpoint}"
+                        + (f" code {task_code}" if task_code else "")
+                        + " na meerdere verbindingspogingen"
+                    )
+
+                return [], debug_lines
+
+        except ValueError as e:
+            stats["failures"] += 1
+
+            if debug:
+                debug_lines.append(
+                    f"📄 Ongeldige JSON-response van {endpoint}"
+                    + (f" code {task_code}" if task_code else "")
+                    + f": {type(e).__name__}: {e}"
+                )
+
+            return [], debug_lines
+
+        except requests.exceptions.RequestException as e:
+            stats["failures"] += 1
+
+            if debug:
+                debug_lines.append(
+                    f"⚠️ Overige requestfout bij {endpoint}"
+                    + (f" code {task_code}" if task_code else "")
+                    + f": {type(e).__name__}: {e}"
+                )
+
+            return [], debug_lines
+
+        except Exception as e:
+            stats["failures"] += 1
+
+            if debug:
+                debug_lines.append(
+                    f"❗ Onverwachte fout bij {endpoint}"
+                    + (f" code {task_code}" if task_code else "")
+                    + f": {type(e).__name__}: {e}"
+                )
+
+            return [], debug_lines
 
 
 @st.cache_data(ttl=300)
