@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*--
 # ===== versie =======================
 #
-__version__ = "3.6.4"
-# woensdag 19:00 en font kleur aanpassing
+__version__ = "3.6.5"
+# font kleur aanpassing
 #
 # ====================================
 
@@ -1489,12 +1489,14 @@ def format_sheet(ws, matrix: pd.DataFrame, slots: Dict[str, List[Tuple[str, str]
                     cell.font = Font(color="FF000000")
                     cell.alignment = wrap
                 else:
-                    if regel in ("Handmatig", "Wedstrijden"):
-                        cell.font = Font(color="FFCC0000")
+                    if regel == "Handmatig":
+                        cell.font = Font(color="FF00B050")  # helder groen
+                    elif regel == "Wedstrijden":
+                        cell.font = Font(color="FFCC0000")  # rood
                     elif regel == "Activiteiten":
-                        cell.font = Font(color="FF0070C0")
+                        cell.font = Font(color="FF0070C0")  # helder blauw
                     else:
-                        cell.font = Font(color="FF000000")
+                        cell.font = Font(color="FF000000")  # zwart
                     cell.alignment = wrap
 
         if r_idx in day_last_row.values():
