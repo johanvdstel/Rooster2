@@ -1,12 +1,12 @@
-#!/usr/bin/env python3
+# !/usr/bin/env python3
 # -*- coding: utf-8 -*--
 # ===== versie =======================
 #
-__version__ = "3.6.5"
-# font kleur aanpassing
+__version__ = "3.6.6"
+# Sportlink programma: generieke DAYS_AHEAD en max. 1000 regels
 #
 # ====================================
-
+#
 # ====================================
 # Versie / imports
 # ====================================
@@ -53,7 +53,10 @@ warnings.filterwarnings(
 debug_fetch = False
 DEFAULT_CLIENT_ID = "K662D1WXrt"
 TZ = "Europe/Amsterdam"
+
 DEFAULT_DAYS_AHEAD = 60
+PROGRAM_MAX_ROWS = 500
+
 WEEK_OFFSET = -1
 FIELDS = "naam,datumvanaf,datumtot,tijdvanaf,tijdtot,lokatie,heledag"
 
@@ -189,15 +192,31 @@ def build_urls(taskcodes: List[str], days: int, client_id: str,
     return urls
 
 
-def build_program_url(days: int, client_id: str, fields: str = PROGRAM_FIELDS,
-                      eigenwedstrijden: str = "JA", thuis: str = "JA", uit: str = "NEE",
-                      gebruiklokaleteamgegevens: str = "NEE") -> str:
+def build_program_url(
+    days: int,
+    client_id: str,
+    fields: str = PROGRAM_FIELDS,
+    max_rows: int = PROGRAM_MAX_ROWS,
+    eigenwedstrijden: str = "JA",
+    thuis: str = "JA",
+    uit: str = "NEE",
+    gebruiklokaleteamgegevens: str = "NEE",
+) -> str:
     base = "https://data.sportlink.com/programma"
-    url = (f"{base}?aantaldagen={int(days)}&client_id={client_id}"
-           f"&eigenwedstrijden={eigenwedstrijden}&thuis={thuis}&uit={uit}"
-           f"&gebruiklokaleteamgegevens={gebruiklokaleteamgegevens}")
+
+    url = (
+        f"{base}?aantaldagen={int(days)}"
+        f"&aantalregels={int(max_rows)}"
+        f"&client_id={client_id}"
+        f"&eigenwedstrijden={eigenwedstrijden}"
+        f"&thuis={thuis}"
+        f"&uit={uit}"
+        f"&gebruiklokaleteamgegevens={gebruiklokaleteamgegevens}"
+    )
+
     if fields:
         url += f"&fields={quote(fields)}"
+
     return url
 
 
