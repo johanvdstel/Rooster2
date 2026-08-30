@@ -1,9 +1,11 @@
-# !/usr/bin/env python3
-# -*- coding: utf-8 -*--
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 # ===== versie =======================
 #
-__version__ = "3.6.6"
-# Sportlink programma: generieke DAYS_AHEAD en max. 1000 regels
+__version__ = "3.6.7"
+# Sportlink programma: generieke DAYS_AHEAD en max. 500 regels
+# Handmatige Dropbox-input gedifferentieerd naar bar/ck
+# Bar en CommissieKamer hebben onafhankelijke tijdsloten
 #
 # ====================================
 #
@@ -63,7 +65,6 @@ FIELDS = "naam,datumvanaf,datumtot,tijdvanaf,tijdtot,lokatie,heledag"
 BAR_CODES = ["701", "741", "761"]
 CK_CODES = ["442"]
 WEEK_LABEL = "short"          # of "iso"
-SAT_ONLY_CK = True            # CommissieKamer alleen zaterdag
 
 ACTIVITIES_FIELDS = (
     "kalendernaam,kalendersoort,activiteit,datumvan,datumtm,"
@@ -97,7 +98,7 @@ WEEK_COLORS = [
     "FFF2CC",  # licht geel
 ]
 
-DEFAULT_SLOTS: Dict[str, List[Tuple[str, str]]] = {
+BAR_DEFAULT_SLOTS: Dict[str, List[Tuple[str, str]]] = {
     "Maandag":   [("18:00", "19:00"), ("19:00", "20:00"), ("20:00", "22:30")],
     "Dinsdag":   [("18:00", "19:00"), ("19:00", "20:00"), ("20:00", "22:30")],
     "Woensdag":  [("17:00", "18:00"), ("18:00", "19:00"), ("19:00", "20:00"), ("20:00", "22:30")],
@@ -107,6 +108,15 @@ DEFAULT_SLOTS: Dict[str, List[Tuple[str, str]]] = {
                   ("12:30", "15:00"), ("15:00", "17:30"),
                   ("17:30", "20:00"), ("20:00", "22:30")],
     "Zondag":    [("10:00", "12:30"), ("12:30", "15:00")],
+}
+
+CK_DEFAULT_SLOTS: Dict[str, List[Tuple[str, str]]] = {
+    "Zaterdag": [
+        ("07:30", "10:00"),
+        ("10:00", "12:30"),
+        ("12:30", "15:00"),
+        ("15:00", "17:30"),
+    ],
 }
 
 DROPBOX_INPUT_URL = "https://www.dropbox.com/scl/fi/ukcs87y9h1j27uyzcotig/rooster_input.txt?rlkey=fx0ayzshabo7zikun620m61hh&st=vtrlzr8k&dl=0"
@@ -739,14 +749,23 @@ def parse_manual_text(text: str):
 
     for line in text.splitlines():
         s = line.strip()
+
+        # Lege regels en commentaarregels overslaan
         if not s or s.startswith("#"):
             continue
-        parts = s.split()
-        if len(parts) < 3:
+
+        # Formaat:
+        # YYYY-MM-DD HH:MM bar/ck tekst
+        parts = s.split(maxsplit=3)
+        if len(parts) < 4:
             continue
 
-        date_str, time_str = parts[0], parts[1]
-        txt = " ".join(parts[2:]).strip()
+        date_str, time_str, location, txt = parts
+        location = location.lower().strip()
+        txt = txt.strip()
+
+        if location not in ("bar", "ck"):
+            continue
 
         try:
             dt_aw = pd.Timestamp(f"{date_str} {time_str}", tz=ZoneInfo(TZ))
@@ -757,7 +776,14 @@ def parse_manual_text(text: str):
             continue
 
         day_name = DAYS_NL[int(dt_aw.weekday())]
-        starts = [a for a, b in DEFAULT_SLOTS.get(day_name, [])]
+
+        if location == "bar":
+            applicable_slots = BAR_DEFAULT_SLOTS
+        else:
+            applicable_slots = CK_DEFAULT_SLOTS
+
+        starts = [a for a, b in applicable_slots.get(day_name, [])]
+
         if time_str not in starts:
             continue
 
@@ -766,6 +792,7 @@ def parse_manual_text(text: str):
             "date": dt_aw.tz_convert(None),
             "time_from": time_str,
             "text": txt,
+            "location": location,
             "iso_year": int(iso.year),
             "iso_week": int(iso.week),
             "day": day_name,
@@ -857,7 +884,7 @@ def merge_custom_slots_into_defaults(
     activities_df: Optional[pd.DataFrame] = None,
 ) -> Tuple[Dict[str, List[Tuple[str, str]]], List[str]]:
     """
-    Haalt custom diensten uit data en voegt ze toe aan DEFAULT_SLOTS.
+    Haalt custom diensten uit data en voegt ze toe aan base_slots.
     Inclusief chronologisch sorteren, overlapcorrectie en deduplicatie.
     Retourneert: (nieuwe_slots, warnings)
     """
@@ -1076,7 +1103,7 @@ def build_activities_calendar_matrix(df_activities):
 
     today = now_naive_in_tz(TZ).normalize()
     start = monday_of_week(today)
-    
+
     last_date = pd.Timestamp(max(grouped.index))
     last_sunday = last_date + pd.Timedelta(
         days=6 - last_date.weekday()
@@ -1317,8 +1344,6 @@ def fill_schedule_items(
 
                 for time_minutes, activity in items:
                     if time_minutes == 0:
-                        # Een activiteit voor de gehele dag plaatsen
-                        # we in het eerste beschikbare slot van die dag.
                         first_slot = slots.get(dag, [])[0] if slots.get(dag) else None
 
                         if first_slot != (van, tot):
@@ -1640,7 +1665,7 @@ def format_activities_calendar_sheet(ws, df, TZ):
                 color="FF0070C0",
                 size=12
             )
-            
+
             if col_index >= len(date_columns):
                 hcell.value = ""
                 dcell.value = ""
@@ -1732,21 +1757,29 @@ def make_excel(df_bar, df_ck, annotations,
     )
     fetch_debug_lines.extend(activities_fetch_debug)
 
-    merged_slots, slot_warnings = merge_custom_slots_into_defaults(
-        [df_bar, df_ck],
-        DEFAULT_SLOTS,
+    # Bar behoudt bestaande dynamische slotlogica.
+    # Alleen Bar-diensten kunnen eventuele aanvullende barslots veroorzaken.
+    bar_slots, slot_warnings = merge_custom_slots_into_defaults(
+        [df_bar],
+        BAR_DEFAULT_SLOTS,
         df_activities if use_activities else None,
     )
+
+    # CK heeft een volledig eigen, vaste slotstructuur.
+    # Sportlink CK-diensten worden via overlap in deze slots geplaatst,
+    # maar kunnen geen nieuwe CK-slots creëren.
+    ck_slots = {
+        day: list(slots)
+        for day, slots in CK_DEFAULT_SLOTS.items()
+    }
 
     weeks_pairs, week_mondays = compute_weeks(
         days_ahead=days_ahead,
         tz_str=TZ,
     )
 
-    days_subset_ck = ["Zaterdag"] if SAT_ONLY_CK else None
-
     matrix_bar = build_roster_matrix(
-        merged_slots,
+        bar_slots,
         None,
         weeks_pairs,
         week_mondays,
@@ -1755,16 +1788,16 @@ def make_excel(df_bar, df_ck, annotations,
     )
 
     matrix_ck = build_roster_matrix(
-        merged_slots,
-        days_subset_ck,
+        ck_slots,
+        ["Zaterdag"],
         weeks_pairs,
         week_mondays,
         TZ,
         WEEK_LABEL,
     )
 
-    warn_bar = fill_names(matrix_bar, df_bar, merged_slots, WEEK_LABEL)
-    warn_ck = fill_names(matrix_ck, df_ck, merged_slots, WEEK_LABEL)
+    warn_bar = fill_names(matrix_bar, df_bar, bar_slots, WEEK_LABEL)
+    warn_ck = fill_names(matrix_ck, df_ck, ck_slots, WEEK_LABEL)
     placement_warnings.extend(warn_bar)
     placement_warnings.extend(warn_ck)
 
@@ -1782,8 +1815,18 @@ def make_excel(df_bar, df_ck, annotations,
             apply_afgeschermd_overrides(matrix_ck, overrides, "ck", WEEK_LABEL, debug_fetch)
         )
 
-    fill_manual(matrix_bar, annotations, merged_slots, WEEK_LABEL)
-    fill_manual(matrix_ck, annotations, merged_slots, WEEK_LABEL)
+    annotations_bar = [
+        a for a in annotations
+        if a.get("location") == "bar"
+    ]
+
+    annotations_ck = [
+        a for a in annotations
+        if a.get("location") == "ck"
+    ]
+
+    fill_manual(matrix_bar, annotations_bar, bar_slots, WEEK_LABEL)
+    fill_manual(matrix_ck, annotations_ck, ck_slots, WEEK_LABEL)
 
     if use_matches:
         program_url = build_program_url(
@@ -1806,14 +1849,14 @@ def make_excel(df_bar, df_ck, annotations,
             matrix_bar,
             match_overlap_index,
             WEEK_LABEL,
-            merged_slots,
+            bar_slots,
             activities_overlap_index,
         )
         fill_schedule_items(
             matrix_ck,
             match_overlap_index,
             WEEK_LABEL,
-            merged_slots,
+            ck_slots,
             activities_overlap_index,
         )
 
@@ -1829,12 +1872,12 @@ def make_excel(df_bar, df_ck, annotations,
         matrix_bar.to_excel(writer, sheet_name="BarRooster")
         ws_bar = writer.sheets["BarRooster"]
         ws_bar.delete_cols(4)
-        format_sheet(ws_bar, matrix_bar, merged_slots, TZ)
+        format_sheet(ws_bar, matrix_bar, bar_slots, TZ)
 
         matrix_ck.to_excel(writer, sheet_name="CommissieKamer")
         ws_ck = writer.sheets["CommissieKamer"]
         ws_ck.delete_cols(4)
-        format_sheet(ws_ck, matrix_ck, merged_slots, TZ)
+        format_sheet(ws_ck, matrix_ck, ck_slots, TZ)
 
         if matrix_activities_calendar is not None:
             sheet_name = "Activiteiten"
