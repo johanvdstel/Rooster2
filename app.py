@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 # ===== versie =======================
 #
-__version__ = "3.6.7"
+__version__ = "3.6.7.1"
 # Sportlink programma: generieke DAYS_AHEAD en max. 500 regels
 # Handmatige Dropbox-input gedifferentieerd naar bar/ck
 # Bar en CommissieKamer hebben onafhankelijke tijdsloten
@@ -1535,9 +1535,9 @@ def format_sheet(ws, matrix: pd.DataFrame, slots: Dict[str, List[Tuple[str, str]
                     cell.alignment = wrap
                 else:
                     if regel == "Handmatig":
-                        cell.font = Font(color="FF00B050")  # helder groen
-                    elif regel == "Wedstrijden":
                         cell.font = Font(color="FFCC0000")  # rood
+                    elif regel == "Wedstrijden":
+                        cell.font = Font(color="FF00B050")  # helder groen
                     elif regel == "Activiteiten":
                         cell.font = Font(color="FF0070C0")  # helder blauw
                     else:
