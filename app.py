@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 # ===== versie =======================
 #
-__version__ = "3.6.7.1"
+__version__ = "3.6.7.2"
 # Sportlink programma: generieke DAYS_AHEAD en max. 500 regels
 # Handmatige Dropbox-input gedifferentieerd naar bar/ck
 # Bar en CommissieKamer hebben onafhankelijke tijdsloten
@@ -100,9 +100,9 @@ WEEK_COLORS = [
 
 BAR_DEFAULT_SLOTS: Dict[str, List[Tuple[str, str]]] = {
     "Maandag":   [("18:00", "19:00"), ("19:00", "20:00"), ("20:00", "22:30")],
-    "Dinsdag":   [("18:00", "19:00"), ("19:00", "20:00"), ("20:00", "22:30")],
-    "Woensdag":  [("17:00", "18:00"), ("18:00", "19:00"), ("19:00", "20:00"), ("20:00", "22:30")],
-    "Donderdag": [("18:00", "19:00"), ("19:00", "20:00"), ("20:00", "22:30")],
+    "Dinsdag":   [("18:00", "22:30")],
+    "Woensdag":  [("17:00", "18:00"), ("18:00", "19:00"), ("19:00", "22:30")],
+    "Donderdag": [("18:00", "22:30")],
     "Vrijdag":   [("18:00", "20:30"), ("20:30", "23:00")],
     "Zaterdag":  [("07:30", "10:00"), ("10:00", "12:30"),
                   ("12:30", "15:00"), ("15:00", "17:30"),
